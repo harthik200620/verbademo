@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Verba CRM — Digital Suvidha</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Poppins:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" sizes="256x256" href="/static/verba_mark.png">
+<link rel="icon" type="image/png" sizes="64x64" href="/static/verba_mark_32.png">
+<link rel="apple-touch-icon" href="/static/verba_mark.png">
+<style>
+  :root{
+    --paper:#F6F4F0; --paper2:#ECE7DF; --card:#FFFFFF;
+    --glass:rgba(255,255,255,.58); --glass-strong:rgba(255,255,255,.82);
+    --glass-edge:rgba(255,255,255,.72);
+    --line:rgba(24,20,38,.10);
+    --ink:#0A0A10; --muted:#524D61;
+    --brand:#3C46C7; --brand-deep:#242B85; --brand-soft:#6935C4;
+    --green:#1C7F4C; --alert:#B8443B; --rsvp:#AD6207;
+    --ease:cubic-bezier(.16,1,.3,1);
+    --shadow-sm:0 1px 3px rgba(20,15,40,.07), 0 1px 2px rgba(20,15,40,.04);
+    --shadow-md:0 20px 48px rgba(20,15,50,.12), 0 4px 14px rgba(20,15,50,.05);
+    --shadow-lg:0 36px 84px rgba(15,12,45,.20), 0 10px 28px rgba(15,12,45,.08);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{background:var(--paper);color:var(--ink);
+    font-family:'Poppins','Noto Sans Devanagari',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    background-image:
+      radial-gradient(1150px 760px at -14% -18%, rgba(60,70,199,.22), transparent 60%),
+      radial-gradient(950px 720px at 110% -12%, rgba(105,53,196,.17), transparent 58%),
+      radial-gradient(1050px 820px at 58% 108%, rgba(60,70,199,.09), transparent 62%),
+      linear-gradient(175deg,#F9F7F3,var(--paper2));
+    background-attachment:fixed;
+    background-repeat:no-repeat;
+    position:relative}
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.028;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  ::selection{background:var(--brand);color:#fff}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px;border:2px solid var(--paper)}
+  a:focus-visible, button:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:8px}
+  .wrap{max-width:980px;margin:0 auto;padding:22px 20px 60px;position:relative;z-index:1}
+  header{display:flex;align-items:center;gap:16px;padding:12px 6px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .logo-img{height:42px;display:block;filter:drop-shadow(0 6px 14px rgba(40,48,140,.16))}
+  .brand h1{font-family:'Fraunces',serif;font-weight:700;font-size:23px;margin:0;color:var(--ink);letter-spacing:-.01em}
+  .brand .sub{font-size:12.5px;color:var(--muted);margin-top:4px;font-weight:500}
+  .live{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--glass);backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);border:1px solid var(--glass-edge);
+    border-radius:999px;padding:8px 15px;font-size:12px;font-weight:700;color:var(--ink);box-shadow:var(--shadow-sm)}
+  .live .dot{position:relative;width:10px;height:10px;border-radius:50%;
+    background:radial-gradient(circle at 32% 26%, #5FCB92, var(--green) 62%, #0E4227 100%);
+    box-shadow:0 0 0 0 rgba(28,127,76,.5);animation:pulse 1.6s var(--ease) infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(28,127,76,.45)}70%{box-shadow:0 0 0 9px rgba(28,127,76,0)}100%{box-shadow:0 0 0 0 rgba(28,127,76,0)}}
+  .filters{display:flex;gap:9px;margin:18px 0 15px;flex-wrap:wrap}
+  .fchip{font-family:inherit;font-size:12.5px;font-weight:700;border:1px solid var(--glass-edge);border-radius:999px;
+    padding:8px 15px;background:var(--glass);backdrop-filter:blur(14px) saturate(160%);-webkit-backdrop-filter:blur(14px) saturate(160%);color:var(--muted);cursor:pointer;
+    box-shadow:var(--shadow-sm);
+    transition:transform .14s var(--ease),background .14s var(--ease),color .14s var(--ease),border-color .14s var(--ease),box-shadow .14s var(--ease)}
+  .fchip:hover{transform:translateY(-1px);box-shadow:var(--shadow-md);border-color:var(--brand)}
+  .fchip.on{background:var(--brand);border-color:var(--brand-deep);color:#fff;box-shadow:var(--shadow-sm)}
+  .list{display:flex;flex-direction:column;gap:12px}
+  .rec{background:var(--glass-strong);backdrop-filter:blur(22px) saturate(170%);-webkit-backdrop-filter:blur(22px) saturate(170%);border:1px solid var(--glass-edge);border-left:4px solid var(--brand);
+    border-radius:16px;padding:15px 17px;animation:rise .32s var(--ease);box-shadow:var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,.7);
+    transition:box-shadow .2s var(--ease),transform .2s var(--ease)}
+  .rec:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+  .rec.flash{animation:flash 1.6s var(--ease)}
+  @keyframes rise{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+  @keyframes flash{0%{background:#FFF3DC}100%{background:var(--glass-strong)}}
+  .rec.enq{border-left-color:var(--brand-soft)}
+  .rec.enq .badge{background:var(--brand-soft)}
+  .rec.rsvp{border-left-color:var(--rsvp)}
+  .rec.rsvp .badge{background:var(--rsvp)}
+  .rec .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .rec .nm{font-family:'Fraunces',serif;font-weight:600;font-size:17px;color:var(--ink)}
+  .rec .ph{font-size:13px;color:var(--muted)}
+  .rec .badge{margin-left:auto;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    color:#fff;background:var(--brand);border-radius:999px;padding:3px 10px;white-space:nowrap}
+  .rec .sum{font-size:13.5px;color:var(--ink);margin-top:7px;background:rgba(16,24,32,.04);border-radius:8px;padding:8px 11px;line-height:1.55}
+  .rec .meta{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:8px}
+  .rec .meta b{color:var(--brand-deep);font-weight:600}
+  .emptybox{margin:60px auto;text-align:center;color:var(--muted);font-size:14px;line-height:1.7;max-width:420px}
+  .emptybox .big{font-family:'Fraunces',serif;font-size:20px;color:var(--ink);margin-bottom:6px}
+  .emptybox .orb{position:relative;width:52px;height:52px;margin:0 auto 16px;border-radius:50%;
+    background:radial-gradient(circle at 32% 26%, #7E8AEA, var(--brand) 55%, var(--brand-deep) 100%);
+    box-shadow:0 12px 28px rgba(60,70,199,.30), inset 0 -5px 10px rgba(0,0,0,.14), inset 0 3px 6px rgba(255,255,255,.4);
+    animation:heroBreathe 4.4s var(--ease) infinite}
+  @keyframes heroBreathe{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
+  a.back{font-size:12px;color:var(--brand-deep);font-weight:600;text-decoration:none;margin-left:14px}
+  a.back:hover{text-decoration:underline}
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="/static/verba_logo.png" alt="Verba" class="logo-img">
+    <div class="brand">
+      <h1>Verba CRM — Digital Suvidha</h1>
+      <div class="sub">Every call writes back here — enquiries, consultation RSVPs, no typing.</div>
+    </div>
+    <div class="live"><span class="dot"></span>LIVE<span id="count" style="color:var(--muted);font-weight:500">· 0 records</span></div>
+    <a class="back" href="/">← Agents</a>
+  </header>
+
+  <div class="filters">
+    <button class="fchip" data-k="consult">💬 Enquiries</button>
+    <button class="fchip" data-k="invite">📅 Consultation RSVPs</button>
+  </div>
+
+  <div class="list" id="list">
+    <div class="emptybox" id="empty">
+      <div class="orb" aria-hidden="true"></div>
+      <div class="big">Waiting for the first record…</div>
+      Run either agent — the moment a call ends in an outcome,
+      it appears here by itself. That's the write-back.
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const KIND = {
+  enquiry: {label:'Enquiry', cls:'enq'},
+  rsvp:    {label:'RSVP',    cls:'rsvp'},
+};
+// Two separate CRMs — one per call line. The tab picks whose CRM you're looking at.
+const params = new URLSearchParams(location.search);
+let adminPw='', records={}, filter=(['consult','invite'].includes(params.get('s')) ? params.get('s') : 'consult');
+
+function key(r){ return (r.kind||'x')+'-'+(r.id||0); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function upsert(r, flash){
+  if(!r || !r.id || !r.kind) return;
+  const k = key(r);
+  const known = !!records[k];
+  records[k] = r;
+  if(!known || flash) render(flash ? k : null);
+}
+function render(flashKey){
+  const list=$('list');
+  document.querySelectorAll('.fchip').forEach(x=>x.classList.toggle('on', x.dataset.k===filter));
+  const rows=Object.values(records)
+    .filter(r=>(r.scenario||'consult')===filter)
+    .sort((a,b)=> (b.created_at||'').localeCompare(a.created_at||'') || (b.id-a.id));
+  list.querySelectorAll('.rec').forEach(n=>n.remove());
+  $('empty').style.display = rows.length ? 'none' : '';
+  for(const r of rows){
+    const km=KIND[r.kind]||{label:r.kind,cls:''};
+    const d=document.createElement('div');
+    d.className='rec '+km.cls+(key(r)===flashKey?' flash':'');
+    d.innerHTML =
+      `<div class="top"><span class="nm">${esc(r.name||'—')}</span>`+
+      (r.phone?`<span class="ph">📞 ${esc(r.phone)}</span>`:'')+
+      `<span class="badge">${esc(km.label)}</span></div>`+
+      (r.summary?`<div class="sum">${esc(r.summary)}</div>`:'')+
+      `<div class="meta"><span>status: <b>${esc(r.status||'new')}</b></span>`+
+      (r.created_at?`<span>${esc(r.created_at)}</span>`:'')+`<span>#${esc(r.id)}</span></div>`;
+    list.appendChild(d);
+  }
+  $('count').textContent = '· '+rows.length+' record'+(rows.length===1?'':'s');
+}
+
+document.querySelectorAll('.fchip').forEach(b=>{
+  b.onclick=()=>{ filter=b.dataset.k; render(); };
+});
+
+// Three sources, merged: (1) the agent tab broadcasts each new row instantly,
+// (2) a rolling localStorage cache survives reloads, (3) the server DB is polled.
+try{
+  new BroadcastChannel('verba-crm').onmessage = ev => upsert(ev.data, true);
+}catch(e){}
+function loadCache(){
+  try{ JSON.parse(localStorage.getItem('verba-crm-cache')||'[]').forEach(r=>upsert(r)); }catch(e){}
+}
+async function poll(){
+  try{
+    const fd=new FormData(); fd.append('password', adminPw);
+    const j=await (await fetch('/api/crm',{method:'POST',body:fd})).json();
+    (j.records||[]).forEach(r=>upsert(r));
+    render();
+  }catch(e){}
+}
+
+// no access gate — open the CRM straight away
+loadCache(); render();
+poll(); setInterval(poll, 4000);
+</script>
+</body>
+</html>

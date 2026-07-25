@@ -1,0 +1,1293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Verba — AI voice agents, all ten use cases</title>
+<link rel="icon" href="/static/verba_mark_32.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Poppins:wght@300;400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Telugu:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ── "Verba White Glass" ──────────────────────────────────────────────────────
+   A white, luminous base with ONE gradient accent sampled straight from the Verba
+   mark (#0178F6 azure → #004AD1 blue → #854CFD violet), so the page and the logo
+   finally agree — the sibling builds used an indigo that appears nowhere in the
+   artwork. Green is a semantic "live" signal only, never decoration.
+   ────────────────────────────────────────────────────────────────────────── */
+:root{
+  --paper:#FBFCFE; --paper2:#EDF1F9; --card:#FFFFFF;
+  --glass:rgba(255,255,255,.62); --glass-strong:rgba(255,255,255,.88);
+  --glass-edge:rgba(255,255,255,.85);
+  --line:rgba(9,20,60,.10); --line-soft:rgba(9,20,60,.055);
+  --ink:#010E2E; --muted:#4B5573; --muted2:#858DA8;
+  --brand:#004AD1; --brand-deep:#1547CC; --brand-soft:#7A3BEA; --azure:#0178F6;
+  --grad:linear-gradient(140deg,#0178F6 0%,#004AD1 48%,#854CFD 100%);
+  --green:#0F7B4F; --alert:#C0392B; --warn:#9A5B12;
+  --ease:cubic-bezier(.16,1,.3,1);
+  --sh-sm:0 1px 2px rgba(10,20,60,.05), 0 1px 3px rgba(10,20,60,.04);
+  --sh-md:0 18px 44px rgba(10,25,80,.10), 0 3px 10px rgba(10,25,80,.04);
+  --sh-lg:0 40px 90px rgba(8,20,70,.16), 0 10px 26px rgba(8,20,70,.07);
+  --r-lg:22px; --r-md:15px; --r-sm:10px;
+  --amp:0;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:Poppins,'Noto Sans Devanagari','Noto Sans Telugu',system-ui,sans-serif;
+  color:var(--ink); background:var(--paper); -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+body::before{
+  content:''; position:fixed; inset:0; z-index:-2; pointer-events:none;
+  background:
+    radial-gradient(900px 620px at 12% -8%,  rgba(1,120,246,.13), transparent 62%),
+    radial-gradient(760px 560px at 92% 6%,   rgba(133,76,253,.11), transparent 60%),
+    radial-gradient(1000px 700px at 50% 112%,rgba(0,74,209,.09),  transparent 64%),
+    linear-gradient(178deg,#FFFFFF,var(--paper2));
+}
+/* Fractal noise at 2.6% keeps large white areas from banding on cheap projectors. */
+body::after{
+  content:''; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.026;
+  mix-blend-mode:multiply;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+h1,h2,h3,.serif{font-family:Fraunces,Georgia,serif;font-weight:600;letter-spacing:-.01em}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;border:none;background:none}
+button:disabled{cursor:not-allowed;opacity:.45}
+:focus-visible{outline:2px solid var(--azure); outline-offset:3px; border-radius:6px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(9,20,60,.16);border-radius:99px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(9,20,60,.28);background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+.eyebrow{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.glass{background:var(--glass); backdrop-filter:blur(18px) saturate(165%);
+  -webkit-backdrop-filter:blur(18px) saturate(165%); border:1px solid var(--glass-edge);
+  box-shadow:var(--sh-md), inset 0 1px 0 rgba(255,255,255,.9)}
+
+/* ── Scenario picker ─────────────────────────────────────────────────────── */
+#scenepick{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;
+  justify-content:center;padding:34px 20px;overflow-y:auto;
+  background:rgba(247,249,253,.72);backdrop-filter:blur(8px)}
+.pickwrap{width:min(1120px,100%);border-radius:26px;padding:30px 30px 26px;
+  background:var(--glass-strong);backdrop-filter:blur(24px) saturate(170%);
+  border:1px solid var(--glass-edge);box-shadow:var(--sh-lg)}
+.pickhead{display:flex;align-items:flex-start;gap:16px;margin-bottom:6px;flex-wrap:wrap}
+.pickhead img{height:34px;width:auto;border-radius:6px}
+.pickhead .t{flex:1;min-width:240px}
+.pickhead h1{margin:6px 0 4px;font-size:26px;line-height:1.16}
+.pickhead p{margin:0;color:var(--muted);font-size:13.5px;line-height:1.6;max-width:66ch}
+.tabs{display:flex;gap:6px;margin:20px 0 4px;flex-wrap:wrap;
+  background:rgba(9,20,60,.045);padding:5px;border-radius:14px;width:fit-content}
+.tab{padding:8px 15px;border-radius:10px;font-size:13px;font-weight:500;color:var(--muted);
+  transition:all .22s var(--ease)}
+.tab[aria-selected="true"]{background:#fff;color:var(--ink);font-weight:600;box-shadow:var(--sh-sm)}
+.tabsub{margin:10px 2px 14px;font-size:12.5px;color:var(--muted2)}
+.scns{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:13px}
+.scn{display:block;text-align:left;padding:16px 17px;border-radius:var(--r-md);background:var(--card);
+  border:1px solid var(--line);box-shadow:var(--sh-sm);transition:all .26s var(--ease);position:relative;
+  overflow:hidden}
+.scn::before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--grad);
+  opacity:0;transition:opacity .26s var(--ease)}
+.scn:hover{transform:translateY(-2px);box-shadow:var(--sh-md);border-color:rgba(0,74,209,.22)}
+.scn:hover::before{opacity:1}
+.scn .ic{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:9px;background:var(--grad);color:#fff;font-size:14px;margin-bottom:9px}
+.scn b{display:block;font-family:Fraunces,serif;font-size:16.5px;font-weight:600;margin:2px 0 3px}
+.scn .biz{font-size:12px;color:var(--brand);font-weight:500;margin-bottom:6px}
+.scn small{display:block;color:var(--muted);font-size:12.4px;line-height:1.55}
+.chips{display:flex;gap:5px;margin-top:11px;flex-wrap:wrap}
+.chip{font-size:11px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);
+  color:var(--muted);background:#fff;transition:all .2s var(--ease)}
+.chip:hover{border-color:var(--brand);color:var(--brand)}
+.chip.on{background:var(--grad);color:#fff;border-color:transparent;font-weight:500}
+.picknote{margin-top:18px;padding-top:15px;border-top:1px solid var(--line-soft);
+  display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  font-size:12px;color:var(--muted2)}
+.picknote a{color:var(--brand);text-decoration:none;font-weight:500}
+.picknote a:hover{text-decoration:underline}
+
+/* ── Shell ───────────────────────────────────────────────────────────────── */
+.wrap{max-width:1240px;margin:0 auto;padding:20px 20px 34px;display:flex;flex-direction:column;
+  min-height:100vh}
+header{display:flex;align-items:center;gap:14px;padding:6px 2px 18px;flex-wrap:wrap}
+header img.logo{height:32px;width:auto;border-radius:5px}
+header .brand{flex:1;min-width:180px}
+header h1{margin:0;font-size:18px;line-height:1.2}
+header .sub{font-size:11.8px;color:var(--muted);margin-top:2px}
+.ghost{padding:7px 13px;border-radius:10px;border:1px solid var(--line);background:var(--glass);
+  font-size:12.5px;color:var(--muted);transition:all .2s var(--ease)}
+.ghost:hover{border-color:var(--brand);color:var(--brand)}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:99px;
+  background:var(--glass);border:1px solid var(--glass-edge);font-size:12px;color:var(--muted);
+  box-shadow:var(--sh-sm)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted2);flex:none;
+  transition:transform .09s linear, background .3s}
+.dot.live{background:var(--green);transform:scale(calc(1 + var(--amp) * .55));
+  box-shadow:0 0 0 4px rgba(15,123,79,.14)}
+.dot.busy{background:var(--azure);animation:pulse 1.15s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
+
+.grid{display:grid;grid-template-columns:1fr 372px;gap:15px;flex:1;min-height:0}
+.panel{border-radius:var(--r-lg);background:var(--glass);
+  backdrop-filter:blur(18px) saturate(165%);-webkit-backdrop-filter:blur(18px) saturate(165%);
+  border:1px solid var(--glass-edge);box-shadow:var(--sh-md), inset 0 1px 0 rgba(255,255,255,.9);
+  display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.phead{display:flex;align-items:center;gap:10px;padding:14px 17px;
+  border-bottom:1px solid var(--line-soft);flex:none}
+.phead .ttl{font-weight:600;font-size:13.5px;flex:1}
+.phead .meta{font-size:11.5px;color:var(--muted2)}
+.cnt{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--grad);color:#fff;font-weight:600}
+.plink{font-size:11.5px;color:var(--brand);text-decoration:none}
+.plink:hover{text-decoration:underline}
+
+/* ── Transcript ──────────────────────────────────────────────────────────── */
+.convo{flex:1;overflow-y:auto;padding:18px 17px;display:flex;flex-direction:column;gap:11px;
+  min-height:320px;scroll-behavior:smooth}
+.msg{max-width:80%;padding:10px 14px;border-radius:16px;font-size:14px;line-height:1.55;
+  animation:rise .3s var(--ease) both;position:relative}
+@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.msg .who{display:block;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:600;opacity:.62;margin-bottom:3px}
+.msg.bot{align-self:flex-start;background:#fff;border:1px solid var(--line-soft);
+  border-bottom-left-radius:5px;box-shadow:var(--sh-sm)}
+.msg.user{align-self:flex-end;background:var(--grad);color:#fff;border-bottom-right-radius:5px;
+  box-shadow:0 6px 18px rgba(0,74,209,.20)}
+.msg.user .who{opacity:.8}
+.typing{align-self:flex-start;display:flex;gap:4px;padding:12px 15px;background:#fff;
+  border:1px solid var(--line-soft);border-radius:16px;border-bottom-left-radius:5px}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--muted2);
+  animation:bounce 1.25s infinite}
+.typing span:nth-child(2){animation-delay:.18s}
+.typing span:nth-child(3){animation-delay:.36s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-5px);opacity:1}}
+.note{align-self:center;font-size:11.5px;color:var(--muted2);background:rgba(9,20,60,.04);
+  padding:5px 12px;border-radius:99px;max-width:88%;text-align:center}
+
+/* ── The brief (empty state) — this is what makes the demo self-explaining ── */
+.brief{padding:6px 2px;animation:rise .4s var(--ease) both}
+.brief .orb{width:56px;height:56px;border-radius:50%;margin:6px 0 16px;position:relative}
+.brief .orb i{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--brand);
+  opacity:.24;animation:ring 3.4s ease-out infinite}
+.brief .orb i:nth-child(2){animation-delay:1.13s}
+.brief .orb i:nth-child(3){animation-delay:2.26s}
+.brief .orb b{position:absolute;inset:34%;border-radius:50%;background:var(--grad)}
+@keyframes ring{0%{transform:scale(.42);opacity:.5}100%{transform:scale(1);opacity:0}}
+.brief h2{margin:0 0 4px;font-size:20px}
+.brief .biz{font-size:12.5px;color:var(--brand);font-weight:500;margin-bottom:14px}
+.brief section{margin-bottom:14px}
+.brief h4{margin:0 0 5px;font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted2);font-weight:600;font-family:Poppins,sans-serif}
+.brief p{margin:0;font-size:13.6px;line-height:1.65;color:var(--muted);max-width:62ch}
+.brief .you{background:linear-gradient(100deg,rgba(1,120,246,.07),rgba(133,76,253,.06));
+  border:1px solid rgba(0,74,209,.15);border-radius:var(--r-md);padding:12px 14px}
+.brief .you p{color:var(--ink)}
+.brief ul{margin:0;padding-left:17px;font-size:13.4px;line-height:1.75;color:var(--muted)}
+.brief ul li::marker{color:var(--brand)}
+
+/* ── Side panel: goal checklist + CRM ────────────────────────────────────── */
+.side{display:flex;flex-direction:column;gap:15px;min-height:0}
+.side .panel{flex:none}
+.side .panel.crm{flex:1;min-height:180px}
+.goals{padding:12px 17px 15px;display:flex;flex-direction:column;gap:2px}
+.goal{display:flex;align-items:flex-start;gap:10px;padding:6px 0;font-size:13px;
+  transition:all .3s var(--ease)}
+.goal .bx{width:17px;height:17px;border-radius:5px;border:1.5px solid var(--line);flex:none;
+  margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:10px;
+  color:#fff;transition:all .32s var(--ease)}
+.goal.done .bx{background:var(--grad);border-color:transparent}
+.goal.done .bx::after{content:'✓'}
+.goal .lb{flex:1;color:var(--muted);transition:color .3s}
+.goal.done .lb{color:var(--ink);font-weight:500}
+.goal .vl{display:block;font-size:11.5px;color:var(--muted2);font-weight:400;margin-top:1px;
+  word-break:break-word}
+.goalfoot{font-size:11.3px;color:var(--muted2);padding:9px 17px 13px;border-top:1px solid var(--line-soft);
+  line-height:1.5}
+.listbox{flex:1;overflow-y:auto;padding:13px 15px;display:flex;flex-direction:column;gap:9px;min-height:0}
+.bk{padding:11px 13px;border-radius:var(--r-sm);background:#fff;border:1px solid var(--line-soft);
+  box-shadow:var(--sh-sm);animation:rise .35s var(--ease) both;border-left:3px solid var(--brand)}
+.bk.escalation{border-left-color:var(--warn)}
+.bk.dnc{border-left-color:var(--alert)}
+.bk .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
+.bk .nm{font-weight:600;font-size:13px}
+.bk .badge{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
+  padding:2px 7px;border-radius:99px;background:rgba(0,74,209,.09);color:var(--brand)}
+.bk .notes{font-size:12px;color:var(--muted);line-height:1.5;margin-top:3px}
+.bk .when{font-size:10.5px;color:var(--muted2);margin-top:6px}
+.bk-empty{font-size:12.3px;color:var(--muted2);line-height:1.65;padding:6px 2px}
+
+/* ── Controls ────────────────────────────────────────────────────────────── */
+.controls{margin-top:15px;padding:15px 17px;border-radius:var(--r-lg);
+  background:var(--glass);backdrop-filter:blur(18px) saturate(165%);
+  -webkit-backdrop-filter:blur(18px) saturate(165%);
+  border:1px solid var(--glass-edge);box-shadow:var(--sh-md);flex:none}
+.btnrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.btn{padding:11px 20px;border-radius:12px;font-size:14px;font-weight:600;
+  background:var(--grad);color:#fff;box-shadow:0 8px 22px rgba(0,74,209,.24);
+  transition:all .22s var(--ease)}
+.btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 12px 28px rgba(0,74,209,.30)}
+.btn.on{background:linear-gradient(140deg,#0F7B4F,#0B5F3D);box-shadow:0 8px 22px rgba(15,123,79,.24)}
+.btn2{padding:10px 15px;border-radius:11px;font-size:13px;border:1px solid var(--line);
+  background:#fff;color:var(--muted);transition:all .2s var(--ease)}
+.btn2:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.status{display:flex;align-items:center;gap:7px;font-size:12.3px;color:var(--muted);margin-left:auto}
+.opts{display:flex;align-items:center;gap:16px;margin-top:13px;padding-top:13px;
+  border-top:1px solid var(--line-soft);flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.opts label{display:flex;align-items:center;gap:7px;cursor:pointer}
+.opts input[type=range]{width:112px;accent-color:var(--brand)}
+.opts input[type=checkbox]{accent-color:var(--brand);width:15px;height:15px;cursor:pointer}
+.typer{display:flex;gap:8px;margin-top:12px}
+.typer input{flex:1;padding:10px 14px;border-radius:11px;border:1px solid var(--line);
+  background:#fff;font-size:13.5px;transition:border-color .2s}
+.typer input:focus{outline:none;border-color:var(--brand)}
+.hint{margin-top:10px;font-size:11.8px;color:var(--muted2);line-height:1.55}
+
+/* ── Latency HUD ─────────────────────────────────────────────────────────── */
+.hud{margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)}
+.hudtop{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.hudtop .big{font-family:Fraunces,serif;font-size:22px;font-weight:600;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.hudtop .big.warn{color:var(--warn)} .hudtop .big.bad{color:var(--alert)}
+.hudtop .sp{margin-left:auto;font-size:11.5px;color:var(--muted2);font-variant-numeric:tabular-nums}
+.bars{display:flex;flex-direction:column;gap:4px;margin-top:9px}
+.barrow{display:flex;align-items:center;gap:7px;height:13px}
+.barrow .n{font-size:10px;color:var(--muted2);width:14px;text-align:right;font-variant-numeric:tabular-nums}
+.bar{flex:1;height:8px;border-radius:99px;background:rgba(9,20,60,.05);display:flex;overflow:hidden}
+.bar i{height:100%;transition:width .4s var(--ease)}
+.bar .s-stt{background:#0178F6} .bar .s-llm{background:#004AD1} .bar .s-tts{background:#854CFD}
+.barrow .ms{font-size:10px;color:var(--muted2);width:46px;font-variant-numeric:tabular-nums}
+.hudkey{display:flex;gap:12px;margin-top:9px;font-size:10.5px;color:var(--muted2);flex-wrap:wrap}
+.hudkey i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}
+.hudtag{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:1px 6px;
+  border-radius:99px;background:rgba(154,91,18,.11);color:var(--warn);margin-left:5px}
+
+/* ── Edge-case lab ───────────────────────────────────────────────────────── */
+.lab{margin-top:15px;padding:15px 17px;border-radius:var(--r-lg);background:var(--glass);
+  backdrop-filter:blur(18px) saturate(165%);-webkit-backdrop-filter:blur(18px) saturate(165%);
+  border:1px solid var(--glass-edge);box-shadow:var(--sh-md);flex:none}
+.lab h3{margin:0 0 3px;font-size:14.5px}
+.lab .lead{font-size:12.3px;color:var(--muted);margin:0 0 12px;line-height:1.55;max-width:74ch}
+.labrow{display:flex;gap:7px;flex-wrap:wrap}
+.lb{padding:7px 12px;border-radius:99px;border:1px solid var(--line);background:#fff;
+  font-size:12.2px;color:var(--muted);transition:all .2s var(--ease)}
+.lb:hover:not(:disabled){border-color:var(--brand);color:var(--brand);transform:translateY(-1px)}
+.lb .k{font-size:10px;color:var(--muted2);margin-left:5px}
+.labwhy{margin-top:11px;font-size:12px;color:var(--muted);line-height:1.6;
+  padding:10px 13px;border-radius:var(--r-sm);background:rgba(1,120,246,.05);
+  border:1px solid rgba(0,74,209,.12);display:none}
+.labwhy.show{display:block;animation:rise .3s var(--ease) both}
+.labwhy b{color:var(--ink)}
+
+footer{margin-top:20px;font-size:11.5px;color:var(--muted2);text-align:center;line-height:1.7}
+footer a{color:var(--brand);text-decoration:none}
+
+@media (max-width:980px){
+  .grid{grid-template-columns:1fr}
+  .side .panel.crm{min-height:220px}
+  .convo{min-height:260px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
+</style>
+</head>
+<body>
+
+<!-- ── Scenario picker ─────────────────────────────────────────────────── -->
+<div id="scenepick" role="dialog" aria-label="Choose a demo">
+  <div class="pickwrap">
+    <div class="pickhead">
+      <img src="/static/verba_logo.png" alt="Verba" />
+      <div class="t">
+        <div class="eyebrow">One agent engine · ten jobs</div>
+        <h1>Every use case Verba builds, in one demo.</h1>
+        <p>Pick a job below and talk to the agent as if it had just called you — or you had
+           just called it. Each one runs a real conversation to a real finish: it asks what it
+           needs, handles you changing your mind, and writes the outcome into the CRM on the
+           right. Same engine every time; only the configuration changes.</p>
+      </div>
+    </div>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div class="tabsub" id="tabsub"></div>
+    <div class="scns" id="scns"></div>
+    <div class="picknote">
+      <span>Speak or type. Works best in Chrome or Edge with the microphone allowed.</span>
+      <span><a href="/crm" target="_blank">Open the CRM in a second tab ↗</a></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Call screen ─────────────────────────────────────────────────────── -->
+<div class="wrap">
+  <header>
+    <img class="logo" src="/static/verba_logo.png" alt="Verba" />
+    <div class="brand">
+      <h1 id="brandH1">Verba</h1>
+      <div class="sub" id="brandSub">AI voice agents · English · हिंदी · తెలుగు</div>
+    </div>
+    <button id="btnScenes" class="ghost">⇄ All ten demos</button>
+    <span class="pill"><span class="dot" id="livedot"></span><span id="pilltext">Idle</span></span>
+  </header>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="phead">
+        <span class="ttl" id="convoTitle">Live conversation</span>
+        <span class="meta" id="langmeta"></span>
+      </div>
+      <div class="convo" id="convo">
+        <div class="brief" id="brief"></div>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="panel">
+        <div class="phead">
+          <span class="ttl">What this call must capture</span>
+          <span class="meta" id="goalcount"></span>
+        </div>
+        <div class="goals" id="goals"></div>
+        <div class="goalfoot">The agent will not close the call while one of these is still
+          missing — the server rejects the record until they're all there.</div>
+      </div>
+      <div class="panel crm">
+        <div class="phead">
+          <span class="ttl">CRM</span>
+          <span class="cnt" id="crmcount">0</span>
+          <a class="plink" id="crmOpen" href="/crm" target="_blank">Open ↗</a>
+        </div>
+        <div class="listbox" id="crmfeed">
+          <div class="bk-empty" id="crmEmpty">Every outcome lands here automatically — including
+            calls where nobody said a word.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="btnrow">
+      <button class="btn" id="btnStart">Start the call</button>
+      <button class="btn2" id="btnStop" disabled>Stop</button>
+      <button class="btn2" id="btnRestart">Restart</button>
+      <span class="status"><span class="dot" id="statdot"></span><span id="statustext">Not connected</span></span>
+    </div>
+    <div class="opts">
+      <label>Mic sensitivity
+        <input type="range" id="sens" min="0.006" max="0.04" step="0.002" value="0.016" />
+        <span id="sensval" style="min-width:62px">normal</span>
+      </label>
+      <label><input type="checkbox" id="discl" checked /> Say it's an AI up front</label>
+    </div>
+    <div class="typer">
+      <input id="typebox" placeholder="…or type instead of speaking" aria-label="Type to the agent" />
+      <button class="btn2" id="btnSend">Send</button>
+    </div>
+    <div class="hint" id="hint"></div>
+
+    <div class="hud" id="hud" style="display:none">
+      <div class="hudtop">
+        <span class="big" id="hudBig">—</span>
+        <span>from your last word to the agent's first sound</span>
+        <span class="sp" id="hudSess"></span>
+      </div>
+      <div class="bars" id="hudBars"></div>
+      <div class="hudkey">
+        <span><i style="background:#0178F6"></i>hearing you</span>
+        <span><i style="background:#004AD1"></i>thinking</span>
+        <span><i style="background:#854CFD"></i>speaking</span>
+        <span id="hudServed"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="lab">
+    <h3>Try to break it</h3>
+    <p class="lead">These are the moments a real call actually goes wrong. Tap one and watch how
+      the agent handles it — it should never hang up on you, never lose the thread, and never
+      end the call without recording an outcome.</p>
+    <div class="labrow" id="labrow"></div>
+    <div class="labwhy" id="labwhy"></div>
+  </div>
+
+  <footer>
+    <b>Verba</b> — AI voice and chat agents for Indian businesses ·
+    <span id="footcfg"></span>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let CONFIG=null, TABS=[], SC=null;                    // SC = the chosen scenario's card data
+let ws=null, listening=false, waitingForServer=false, playing=false;
+let audioCtx=null, micStream=null, workletNode=null, sourceNode=null;
+let recog=null, pendingAudioMime=null, currentAudio=null, typingEl=null;
+let httpMode=false, httpHistory=[];
+let noReplyTimer=null, noReplyCount=0, endingCall=false, closeRequested=false;
+let sessionScenario='lead', sessionLang='english', disclose=true;
+let NOTES={reask:'',close:'',ending:''};
+const adminPw='';
+
+const LANGS={english:{code:'en-IN',label:'English'},hindi:{code:'hi-IN',label:'हिंदी'},
+             telugu:{code:'te-IN',label:'తెలుగు'}};
+const NO_REPLY_MS=3000, NO_REPLY_CHAT_MS=8000;
+const FETCH_TIMEOUT_MS=12000;
+
+function langLabel(){ return (LANGS[sessionLang]||LANGS.english).label; }
+function langCode(){ return (LANGS[sessionLang]||LANGS.english).code; }
+function isChat(){ return !!(SC && SC.chat); }
+
+/* A hung request used to leave waitingForServer=true forever, and the no-reply ladder
+   suppresses itself while that flag is set — so the page waited politely, silently, until
+   someone reloaded. Every fetch now has a deadline. */
+async function jfetch(url, opts){
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort(), (opts&&opts.timeout)||FETCH_TIMEOUT_MS);
+  try{ return await fetch(url, Object.assign({signal:ac.signal}, opts||{})); }
+  finally{ clearTimeout(t); }
+}
+
+/* ── Boot ───────────────────────────────────────────────────────────────── */
+(async function boot(){
+  try{ TABS = (await (await jfetch('/api/scenarios')).json()).tabs || []; }catch(e){ TABS=[]; }
+  renderPicker();
+  $('scenepick').style.display='flex';
+  $('btnScenes').onclick = ()=>location.reload();
+})();
+
+function renderPicker(){
+  const tabs=$('tabs'), scns=$('scns');
+  tabs.innerHTML='';
+  TABS.forEach((t,i)=>{
+    const b=document.createElement('button');
+    b.className='tab'; b.textContent=t.title; b.setAttribute('role','tab');
+    b.setAttribute('aria-selected', i===0?'true':'false');
+    b.onclick=()=>{ TABS.forEach((_,j)=>tabs.children[j].setAttribute('aria-selected', j===i?'true':'false'));
+                    drawTab(i); };
+    tabs.appendChild(b);
+  });
+  drawTab(0);
+  function drawTab(i){
+    const t=TABS[i]; if(!t) return;
+    $('tabsub').textContent=t.sub;
+    scns.innerHTML='';
+    t.items.forEach(s=>{
+      const el=document.createElement('button');
+      el.className='scn';
+      el.innerHTML =
+        `<span class="ic">${esc(s.icon)}</span>`+
+        `<div class="eyebrow">${esc(s.service)}</div>`+
+        `<b>${esc(s.title)}</b>`+
+        `<div class="biz">${esc(s.business)} — ${esc(s.sector)}</div>`+
+        `<small>${esc(s.card.what)}</small>`+
+        `<span class="chips">`+ s.langs.map(l=>
+          `<span class="chip${l===s.default_lang?' on':''}" data-lang="${l}">${LANGS[l].label}</span>`
+        ).join('') + `</span>`;
+      el.onclick=(e)=>{
+        const chip=e.target.closest('.chip');
+        choose(s, chip? chip.dataset.lang : s.default_lang);
+      };
+      scns.appendChild(el);
+    });
+  }
+}
+
+async function choose(s, lang){
+  SC=s; sessionScenario=s.id; sessionLang=LANGS[lang]?lang:s.default_lang;
+  openerData=null; openerPromise=null; turnsSent=0; noReplyCount=0;
+  closeRequested=false; endingCall=false; callOpened=false; httpHistory=[];
+  $('scenepick').style.display='none';
+  document.body.dataset.scene=s.id;
+  $('brandH1').textContent = s.business;
+  $('brandSub').textContent = s.service + ' · ' + langLabel();
+  $('convoTitle').textContent = s.chat ? 'Live chat' : 'Live call';
+  $('langmeta').textContent = s.agent + ' · ' + langLabel();
+  $('btnStart').textContent = s.chat ? 'Start the chat' : (s.outbound ? 'Answer the call' : 'Call them');
+  $('crmOpen').href='/crm?s='+s.id;
+  $('typebox').placeholder = s.chat ? 'Type like you would on WhatsApp…' : '…or type instead of speaking';
+  $('hint').innerHTML = s.chat
+    ? 'Type short, lowercase, with typos if you like — it is built for that.'
+    : 'Press <b>'+esc($('btnStart').textContent)+'</b>, then just talk. You can interrupt it mid-sentence.';
+  renderBrief(); renderGoals({}); renderLab();
+  if(recog){ try{ recog.lang=langCode(); }catch(e){} }
+  await Promise.all([loadNotes(), init()]);
+  getOpening();                      // warm the first line while they read the brief
+  ensureWS();
+}
+
+function renderBrief(){
+  const c=SC.card;
+  $('brief').innerHTML =
+    `<div class="orb"><i></i><i></i><i></i><b></b></div>`+
+    `<div class="eyebrow">${esc(SC.service)}</div>`+
+    `<h2>${esc(SC.title)}</h2>`+
+    `<div class="biz">${esc(SC.business)} — ${esc(SC.sector)} · ${esc(SC.agent)} is the agent</div>`+
+    `<section><h4>What this demo is doing</h4><p>${esc(c.what)}</p></section>`+
+    `<section class="you"><h4>Your part</h4><p>${esc(c.you_are)}</p></section>`+
+    `<section><h4>It will ask you</h4><ul>${c.asks.map(a=>`<li>${esc(a)}</li>`).join('')}</ul></section>`+
+    `<section><h4>It stops when</h4><p>${esc(c.ends)}</p></section>`;
+}
+
+function renderGoals(vals){
+  const box=$('goals'); box.innerHTML='';
+  let done=0;
+  SC.goal.forEach(g=>{
+    const v = vals[g.key] || vals[g.key==='order'?'order_no':g.key] || '';
+    const has = String(v||'').trim().length>0;
+    if(has) done++;
+    const d=document.createElement('div');
+    d.className='goal'+(has?' done':'');
+    d.innerHTML=`<span class="bx"></span><span class="lb">${esc(g.label)}`+
+                (has?`<span class="vl">${esc(String(v).slice(0,80))}</span>`:'')+`</span>`;
+    box.appendChild(d);
+  });
+  $('goalcount').textContent = done+' / '+SC.goal.length;
+}
+
+/* ── Edge-case lab ──────────────────────────────────────────────────────── */
+const LAB = [
+  {k:'silence', t:'Say nothing', why:'The line goes quiet. The agent checks twice, then leaves a short message and <b>still records an outcome</b> — a call nobody answers is still data.'},
+  {k:'gibberish', t:'Talk nonsense', en:'blorf wentle prakkim', hi:'ब्लॉर्फ वेंटल प्रक्किम', te:'బ్లార్ఫ్ వెంటల్ ప్రక్కిమ్',
+   why:'One unrecognisable answer must never end a call. It asks you to say it again instead of guessing — the bug that once made an agent hang up because "wheat" was heard as "sweet".'},
+  {k:'cutoff', t:'Trail off mid-sentence', en:'yeah so I was thinking about', hi:'हाँ तो मैं सोच रहा था कि', te:'అవును నేను ఆలోచిస్తున్నాను',
+   why:'An unfinished sentence is not an answer. It says "go on?" and waits, instead of guessing an outcome and closing the call on you.'},
+  {k:'switch', t:'Switch to Hindi', en:'रुकिए, हिंदी में बात कीजिए', hi:'wait, speak in English please', te:'ఆగండి, హిందీలో మాట్లాడండి',
+   why:'The <b>whole pipeline</b> switches — speech recognition, the voice, and every system line. Most agents only switch the words and keep the old voice.'},
+  {k:'human', t:'Ask for a human', en:'I want to talk to a real person', hi:'मुझे किसी इंसान से बात करनी है', te:'నేను ఒక మనిషితో మాట్లాడాలి',
+   why:'It never stalls or tries once more. It takes a number, promises a callback, and flags the record as escalated.'},
+  {k:'dnc', t:'"Don\'t call me again"', en:'please do not call me again, remove my number', hi:'मुझे दोबारा कॉल मत कीजिए, नंबर हटा दीजिए', te:'దయచేసి మళ్ళీ కాల్ చేయకండి',
+   why:'It agrees immediately, never argues, and sets a real <b>do-not-call flag</b> on the record — not a note buried in free text.'},
+  {k:'ai', t:'"Are you a real person?"', en:'wait, are you a real person or a bot?', hi:'रुकिए, आप असली इंसान हैं या बॉट?', te:'మీరు నిజమైన వ్యక్తా లేక బాట్?',
+   why:'One honest line, no dodging, then it carries on. Dodging is what makes people hang up.'},
+  {k:'rude', t:'Be rude', en:'this is a waste of my time, you are useless', hi:'ये मेरा समय बर्बाद कर रहा है, बेकार हो तुम', te:'ఇది నా సమయం వృధా, మీరు పనికిరారు',
+   why:'One composed line. If it continues, it closes courteously — and still records the call, marked abusive.'},
+  {k:'offtopic', t:'Go off topic', en:'anyway, tell me a joke about cricket', hi:'वैसे, क्रिकेट पर कोई चुटकुला सुनाइए', te:'సరే, క్రికెట్ మీద ఒక జోక్ చెప్పండి',
+   why:'It counts your detours and escalates differently each time — never the same redirect twice. On the third it wraps up and records.'},
+  {k:'unknown', t:'Ask what it cannot know', en:'what exactly will this cost me, to the rupee?', hi:'मुझे बिल्कुल सही कीमत बताइए, एक-एक रुपया', te:'ఖచ్చితంగా ఎంత ఖర్చు అవుతుంది?',
+   why:'It says it does not know and hands you the real next step. A confident wrong answer is worse than an honest one.'},
+  {k:'correct', t:'Change your mind', en:'actually, ignore what I just said — make it the opposite', hi:'नहीं नहीं, जो अभी कहा वो भूल जाइए — उल्टा कर दीजिए', te:'కాదు, ఇప్పుడే చెప్పింది మర్చిపోండి',
+   why:'It takes the newest version silently. No "but you said earlier" — that is what makes an agent feel like a form.'},
+  {k:'wrong', t:'Say it is the wrong number', en:'sorry, I think you have the wrong number', hi:'माफ़ कीजिए, आपने गलत नंबर लगाया है', te:'క్షమించండి, తప్పు నంబర్',
+   why:'It apologises, stops discussing anything private, closes, and records it as a wrong number.'},
+];
+function renderLab(){
+  const row=$('labrow'); row.innerHTML='';
+  LAB.forEach(item=>{
+    const b=document.createElement('button');
+    b.className='lb'; b.textContent=item.t;
+    b.onclick=()=>runLab(item);
+    row.appendChild(b);
+  });
+  $('labwhy').classList.remove('show');
+}
+function runLab(item){
+  $('labwhy').innerHTML = '<b>'+esc(item.t)+'</b> — '+item.why;
+  $('labwhy').classList.add('show');
+  if(item.k==='silence'){
+    if(!listening && !chatStarted()){ sysNote('Start the call first, then tap this.'); return; }
+    clearNoReply(); handleNoReply();          // skip the 3s wait, run the ladder now
+    return;
+  }
+  const txt = item[sessionLang==='hindi'?'hi':(sessionLang==='telugu'?'te':'en')] || item.en;
+  if(!listening && !chatStarted()){ sysNote('Start the call first, then tap this.'); return; }
+  $('typebox').value = txt; sendTyped();
+}
+function chatStarted(){ return httpHistory.length>0 || turnsSent>0; }
+
+/* ── Config / notes ─────────────────────────────────────────────────────── */
+async function init(){
+  for(let i=0;i<3 && !CONFIG;i++){
+    try{ CONFIG = await (await jfetch('/config')).json(); }
+    catch(e){ await new Promise(r=>setTimeout(r,400*(i+1))); }
+  }
+  // Browser STT only when the server SAYS so — it silently hears nothing on many phones,
+  // so one flaky /config request must not downgrade the whole call.
+  if(!CONFIG) CONFIG={stt:'sarvam',tts:'elevenlabs',llm_ok:true};
+  $('footcfg').textContent =
+    (CONFIG.stt==='sarvam'?'Sarvam speech':'browser speech')+' · '+
+    (CONFIG.tts||'—')+' voice · '+(CONFIG.model||'')+' · '+(CONFIG.llm_keys||0)+' keys';
+  await loadCrm();
+}
+async function loadNotes(){
+  try{
+    NOTES = await (await jfetch('/api/notes?scenario='+sessionScenario+'&lang='+sessionLang)).json();
+  }catch(e){ NOTES={reask:'',close:'',ending:''}; }
+}
+
+/* ── CRM feed ───────────────────────────────────────────────────────────── */
+const KIND_META={lead:'Lead',prospect:'Prospect',winback:'Win-back',feedback:'Feedback',
+  collection:'Payment',appointment:'Booking',ticket:'Ticket',enquiry:'Enquiry',order:'Order',
+  escalation:'Escalated'};
+function addCrmCard(r, quiet){
+  if(!r || !r.id) return;
+  if(r.scenario && r.scenario!==sessionScenario) return;
+  const box=$('crmfeed');
+  if(box.querySelector('.bk[data-id="'+r.kind+'-'+r.id+'"]')) return;
+  const card=document.createElement('div');
+  const dnc = String(r.status||'')==='do_not_call';
+  card.className='bk'+(r.kind==='escalation'?' escalation':'')+(dnc?' dnc':'');
+  card.setAttribute('data-id', r.kind+'-'+r.id);
+  card.innerHTML=
+    `<div class="top"><span class="nm">${esc(r.name||'—')}</span>`+
+    `<span class="badge">${esc(KIND_META[r.kind]||r.kind||'record')}</span></div>`+
+    (r.phone?`<div class="notes">📞 ${esc(r.phone)}</div>`:'')+
+    (r.summary?`<div class="notes">${esc(r.summary)}</div>`:'')+
+    `<div class="when">${esc(r.status||'')}${r.created_at?' · '+esc(r.created_at):''} · #${esc(r.id)}</div>`;
+  const empty=box.querySelector('.bk-empty'); if(empty) empty.style.display='none';
+  box.insertBefore(card, box.querySelector('.bk')||null);
+  $('crmcount').textContent = box.querySelectorAll('.bk').length;
+  if(!quiet) ting();
+}
+async function loadCrm(){
+  try{
+    const fd=new FormData(); fd.append('password',adminPw);
+    const {records}=await (await jfetch('/api/crm',{method:'POST',body:fd})).json();
+    $('crmfeed').querySelectorAll('.bk').forEach(n=>n.remove());
+    const mine=(records||[]).filter(r=>!r.scenario||r.scenario===sessionScenario);
+    mine.slice().reverse().forEach(r=>addCrmCard(r,true));
+    $('crmcount').textContent=mine.length;
+  }catch(e){}
+}
+let crmBC=null;
+function onCrm(r){
+  addCrmCard(r);
+  try{ crmBC = crmBC || new BroadcastChannel('verba-crm'); crmBC.postMessage(r); }catch(e){}
+  try{
+    const k='verba-crm-cache';
+    const arr=JSON.parse(localStorage.getItem(k)||'[]').filter(x=>!(x&&x.kind===r.kind&&x.id===r.id));
+    arr.unshift(r); localStorage.setItem(k, JSON.stringify(arr.slice(0,50)));
+  }catch(e){}
+  sysNote(String(r.status)==='do_not_call' ? '✓ Logged — and flagged do-not-call'
+                                           : '✓ Outcome written to the CRM');
+  endingCall=true;
+}
+
+/* ── Transcript UI ──────────────────────────────────────────────────────── */
+function clearBrief(){ const b=$('brief'); if(b && b.style.display!=='none') b.style.display='none'; }
+function bubble(text, role){
+  clearBrief();
+  const d=document.createElement('div');
+  d.className='msg '+(role==='user'?'user':'bot');
+  const w=document.createElement('span'); w.className='who';
+  w.textContent = role==='user' ? 'You' : (SC? SC.agent : 'Agent');
+  d.appendChild(w); d.appendChild(document.createTextNode(text));
+  $('convo').appendChild(d); $('convo').scrollTop=$('convo').scrollHeight;
+}
+function sysNote(t){
+  clearBrief();
+  const d=document.createElement('div'); d.className='note'; d.textContent=t;
+  $('convo').appendChild(d); $('convo').scrollTop=$('convo').scrollHeight;
+}
+function showTyping(){
+  hideTyping(); clearBrief();
+  typingEl=document.createElement('div'); typingEl.className='typing';
+  typingEl.innerHTML='<span></span><span></span><span></span>';
+  $('convo').appendChild(typingEl); $('convo').scrollTop=$('convo').scrollHeight;
+}
+function hideTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
+
+let tingCtx=null;
+function ting(){
+  try{
+    tingCtx = tingCtx || new (window.AudioContext||window.webkitAudioContext)();
+    const t=tingCtx.currentTime;
+    [880,1318].forEach((f,i)=>{
+      const o=tingCtx.createOscillator(), g=tingCtx.createGain();
+      o.type='sine'; o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,t+i*.09);
+      g.gain.exponentialRampToValueAtTime(.14,t+i*.09+.02);
+      g.gain.exponentialRampToValueAtTime(.0001,t+i*.09+.55);
+      o.connect(g); g.connect(tingCtx.destination);
+      o.start(t+i*.09); o.stop(t+i*.09+.6);
+    });
+  }catch(e){}
+}
+
+function setPill(state){
+  if(state!=='listening') document.documentElement.style.setProperty('--amp','0');
+  const map={
+    listening:['live','Listening…','live','Listening — speak now'],
+    transcribing:['busy','Hearing you…','busy','Transcribing'],
+    thinking:['busy','Thinking…','busy','Agent is thinking'],
+    speaking:['busy','Speaking…','busy','Agent is replying'],
+    idle:['', listening?'Ready':'Idle','', listening?'Ready — speak any time':'Idle'],
+    off:['','Idle','','Not connected']
+  };
+  const m=map[state]||map.off;
+  $('livedot').className='dot '+m[0]; $('pilltext').textContent=m[1];
+  $('statdot').className='dot '+m[2]; $('statustext').textContent=m[3];
+}
+
+/* ── Latency HUD ────────────────────────────────────────────────────────── */
+let hudTurns=[], tEndOfSpeech=0;
+function onMetrics(m){
+  const d=m.derived||{}, det=m.detail||{};
+  // The number that matters is what the HUMAN experiences: from their last word to the first
+  // sound back. Server stages explain it; they are not the headline.
+  const client = tEndOfSpeech ? Math.round(performance.now()-tEndOfSpeech) : 0;
+  const total = client || (d.server_ms||0);
+  // The bar shows time-to-first-SOUND, not full render: the rest of the utterance streams
+  // while the caller is already listening, so counting it would misreport the experience.
+  hudTurns.push({total, stt:d.stt_ms||0, llm:d.llm_ms||0,
+                 tts:d.tts_ttfb_ms||d.tts_ms||0, ttsFull:d.tts_ms||0,
+                 hedge:det.hedge_fired, cold:det.cold, tool:det.tool, served:det.served_by||''});
+  if(hudTurns.length>12) hudTurns.shift();
+  $('hud').style.display='block';
+  const big=$('hudBig');
+  big.textContent = (total/1000).toFixed(2)+'s';
+  big.className='big'+(total<1200?'':(total<1800?' warn':' bad'));
+  const sorted=hudTurns.map(t=>t.total).sort((a,b)=>a-b);
+  const p50=sorted[Math.floor(sorted.length/2)]||0;
+  $('hudSess').textContent = hudTurns.length+' turns · median '+(p50/1000).toFixed(2)+'s';
+  $('hudServed').textContent = det.served_by ? ('· '+det.served_by) : '';
+  const bars=$('hudBars'); bars.innerHTML='';
+  hudTurns.slice().reverse().forEach((t,i)=>{
+    const sum=Math.max(1,t.stt+t.llm+t.tts);
+    const w=s=>((s/sum)*100).toFixed(1)+'%';
+    const r=document.createElement('div'); r.className='barrow';
+    r.innerHTML=`<span class="n">${hudTurns.length-i}</span>`+
+      `<span class="bar"><i class="s-stt" style="width:${w(t.stt)}"></i>`+
+      `<i class="s-llm" style="width:${w(t.llm)}"></i>`+
+      `<i class="s-tts" style="width:${w(t.tts)}"></i></span>`+
+      `<span class="ms">${(t.total/1000).toFixed(2)}s</span>`+
+      (t.hedge?'<span class="hudtag">hedge</span>':'')+
+      (t.tool?'<span class="hudtag">tool</span>':'');
+    bars.appendChild(r);
+  });
+  tEndOfSpeech=0;
+}
+
+/* ── WebSocket ──────────────────────────────────────────────────────────── */
+function connectWS(){
+  return new Promise((resolve,reject)=>{
+    try{
+      const proto=location.protocol==='https:'?'wss':'ws';
+      ws=new WebSocket(`${proto}://${location.host}/ws`);
+    }catch(e){ return reject(e); }
+    ws.binaryType='arraybuffer';
+    const to=setTimeout(()=>reject(new Error('ws timeout')),3500);
+    ws.onopen=()=>{ clearTimeout(to);
+      ws.send(JSON.stringify({type:'hello',password:adminPw,scenario:sessionScenario,
+                              lang:sessionLang,disclose:disclose}));
+      resolve(); };
+    ws.onerror=e=>{ clearTimeout(to); reject(e); };
+    // If the socket drops MID-CALL, never leave a zombie call that ignores the caller forever.
+    ws.onclose=()=>{ if(listening && !endingCall){
+      sysNote('The line dropped — call ended. Press start to call again.'); endCall(); } };
+    ws.onmessage=onWsMessage;
+  });
+}
+function wsSend(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+async function ensureWS(){
+  if(httpMode) return false;
+  if(ws&&ws.readyState===1) return true;
+  try{ await connectWS(); return true; }catch(e){ httpMode=true; return false; }
+}
+function b64toBlob(b64,mime){
+  const bin=atob(b64), u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return new Blob([u8],{type:mime||'audio/mpeg'});
+}
+
+function onWsMessage(ev){
+  if(typeof ev.data!=='string'){
+    if(pcmRate){ pushPcm(ev.data); return; }         // streaming PCM path
+    playAudio(new Blob([ev.data],{type:pendingAudioMime||'audio/mpeg'}));
+    pendingAudioMime=null; return;
+  }
+  let m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+  switch(m.type){
+    case 'transcript': hideTyping(); bubble(m.text,'user'); break;
+    case 'assistant_text': hideTyping(); bubble(m.text,'assistant'); break;
+    case 'tts_audio_meta': pendingAudioMime=m.mime; break;
+    case 'tts_stream_start': startPcm(m.rate); break;
+    case 'tts_stream_end': endPcm(); break;
+    case 'crm_created': onCrm(m.crm); break;
+    case 'goal_progress': renderGoals(m.goal||{}); break;
+    case 'turn_metrics': onMetrics(m); break;
+    case 'lang_switched':
+      sessionLang=m.lang;
+      $('langmeta').textContent=(SC?SC.agent:'Agent')+' · '+langLabel();
+      $('brandSub').textContent=(SC?SC.service:'')+' · '+langLabel();
+      sysNote('Switched to '+langLabel()+' — voice, speech recognition and all system lines.');
+      loadNotes();
+      if(recog){ try{ recog.lang=langCode(); }catch(e){} }
+      break;
+    case 'status':
+      if(m.state==='thinking'){ showTyping(); setPill('thinking'); break; }
+      if(m.state!=='idle'){ setPill(m.state); break; }
+      hideTyping(); waitingForServer=false;
+      if(m.detail==='no speech detected'){ onBrokenInput(); break; }
+      endOfStream(); break;
+    case 'error':
+      hideTyping(); sysNote('Something glitched on the '+(m.where||'server')+' — carry on talking.');
+      waitingForServer=false; endOfStream(); rearm(); break;
+  }
+}
+
+/* ── The opener ─────────────────────────────────────────────────────────── */
+let openerData=null, openerPromise=null, turnsSent=0, callOpened=false;
+async function getOpening(){
+  if(openerData) return openerData;
+  if(openerPromise) return openerPromise;    // in-flight dedup: concurrent synths of the SAME
+  openerPromise=(async()=>{                  // line trip ElevenLabs' 2-concurrent cap at pickup
+    try{
+      const fd=new FormData();
+      fd.append('password',adminPw); fd.append('scenario',sessionScenario);
+      fd.append('lang',sessionLang); fd.append('disclose', disclose?'1':'0');
+      openerData=await (await jfetch('/api/opening',{method:'POST',body:fd})).json();
+    }catch(e){ openerData=null; }
+    openerPromise=null; return openerData;
+  })();
+  return openerPromise;
+}
+
+/* ── No-reply ladder: follow-up → follow-up → close AND record ──────────── */
+function clearNoReply(){ if(noReplyTimer){ clearTimeout(noReplyTimer); noReplyTimer=null; } }
+function armNoReply(){
+  clearNoReply();
+  if(!listening && !isChat()) return;
+  if(endingCall) return;
+  noReplyTimer=setTimeout(handleNoReply, isChat()?NO_REPLY_CHAT_MS:NO_REPLY_MS);
+}
+async function handleNoReply(){
+  noReplyTimer=null;
+  if((!listening && !isChat()) || endingCall) return;
+  if(waitingForServer||playing||capturing){ armNoReply(); return; }
+  if(noReplyCount<2){ noReplyCount++; sendSilent(NOTES.reask); }
+  else if(!closeRequested){ closeRequested=true; sendSilent(NOTES.close); }
+  else { endingCall=true; sayFixed(NOTES.ending); }
+}
+async function sendSilent(note){
+  if(!note) return;
+  clearNoReply(); showTyping(); setPill('thinking'); waitingForServer=true;
+  await ensureWS();
+  if(httpMode) postTurn({text:note,silent:true});
+  else wsSend({type:'turn_text',text:note,silent:true,scenario:sessionScenario,
+               lang:sessionLang,disclose:disclose});
+}
+function onBrokenInput(){
+  waitingForServer=false; clearAudioQueue();
+  if(!listening && !isChat()){ setPill('idle'); return; }
+  if(endingCall){ endCall(); return; }
+  rearm();
+  if(noReplyCount<2){ noReplyCount++; sendSilent(NOTES.reask); }
+  else if(!closeRequested){ closeRequested=true; sendSilent(NOTES.close); }
+  else { endingCall=true; sayFixed(NOTES.ending); }
+}
+async function sayFixed(text){
+  bubble(text,'assistant');
+  try{
+    const fd=new FormData();
+    fd.append('text',text); fd.append('password',adminPw);
+    fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
+    const j=await (await jfetch('/api/say',{method:'POST',body:fd})).json();
+    if(j&&j.audio_b64) playAudio(b64toBlob(j.audio_b64,j.audio_mime));
+  }catch(e){}
+  endOfStream();
+}
+function endCall(){
+  endingCall=false; noReplyCount=0; closeRequested=false; clearNoReply(); clearAudioQueue();
+  if(listening){
+    listening=false; stopMic(); stopRecog();
+    $('btnStart').classList.remove('on');
+    $('btnStart').textContent = SC.chat?'Start the chat':(SC.outbound?'Answer the call':'Call them');
+    $('btnStop').disabled=true;
+  }
+  setPill('idle');
+  sysNote('Call ended. Press start to run it again, or pick another demo.');
+}
+
+/* ── HTTP fallback path ─────────────────────────────────────────────────── */
+async function postTurn(opts){
+  clearNoReply(); showTyping(); setPill('thinking'); waitingForServer=true;
+  const fd=new FormData();
+  if(opts.text) fd.append('text',opts.text);
+  if(opts.wav)  fd.append('audio',new Blob([opts.wav],{type:'audio/wav'}),'turn.wav');
+  fd.append('history',JSON.stringify(httpHistory));
+  fd.append('password',adminPw); fd.append('scenario',sessionScenario);
+  fd.append('lang',sessionLang); fd.append('disclose', disclose?'1':'0');
+  let d;
+  try{ d=await (await jfetch('/api/turn',{method:'POST',body:fd,timeout:25000})).json(); }
+  catch(e){
+    hideTyping(); sysNote('Network hiccup — try that again.');
+    waitingForServer=false; endOfStream(); return;
+  }
+  hideTyping();
+  if(d.error==='no input'){ onBrokenInput(); return; }
+  if(d.transcript && !opts.silent) bubble(d.transcript,'user');
+  if(d.error) sysNote('Something glitched — carry on talking.');
+  if(d.reply) bubble(d.reply,'assistant');
+  if(d.goal && Object.keys(d.goal).length) renderGoals(d.goal);
+  if(d.crm) onCrm(d.crm);
+  if(Array.isArray(d.history)) httpHistory=d.history;
+  if(d.timing) onMetrics({derived:{stt_ms:d.timing.stt_ms,llm_ms:d.timing.llm_ms,
+    tts_ms:d.timing.tts_ms,server_ms:d.timing.total_ms},
+    detail:{served_by:d.timing.served_by,hedge_fired:d.timing.hedge_fired,cold:d.timing.cold}});
+  waitingForServer=false;
+  if(d.audio_b64){
+    playAudio(b64toBlob(d.audio_b64,d.audio_mime));
+    if(d.rest_text) sayRest(d.rest_text); else endOfStream();
+  } else endOfStream();
+}
+async function sayRest(text){
+  const ep=audioEpoch;
+  try{
+    const fd=new FormData();
+    fd.append('text',text); fd.append('password',adminPw);
+    fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
+    const j=await (await jfetch('/api/say',{method:'POST',body:fd})).json();
+    if(j&&j.audio_b64&&ep===audioEpoch) playAudio(b64toBlob(j.audio_b64,j.audio_mime));
+  }catch(e){}
+  endOfStream();
+}
+
+/* ── Controls ───────────────────────────────────────────────────────────── */
+$('btnStart').onclick=startTalking;
+$('btnStop').onclick=stopTalking;
+$('btnRestart').onclick=restart;
+$('btnSend').onclick=sendTyped;
+$('typebox').addEventListener('keydown',e=>{ if(e.key==='Enter') sendTyped(); });
+$('typebox').addEventListener('input',()=>{ if(isChat()&&turnsSent>0) armNoReply(); });
+$('sens').addEventListener('input',e=>{
+  const v=parseFloat(e.target.value);
+  $('sensval').textContent = v<0.012?'sensitive':(v>0.026?'quiet room':'normal');
+});
+$('discl').addEventListener('change',e=>{
+  disclose=e.target.checked; openerData=null; openerPromise=null;
+  wsSend({type:'hello',scenario:sessionScenario,lang:sessionLang,disclose:disclose});
+  getOpening();
+});
+
+/* Backgrounding a tab on mobile suspends the AudioContext, and nothing in the sibling builds
+   noticed — the call looked alive and heard nothing. Resume it, or end cleanly. */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) return;
+  if(pcmCtx && pcmCtx.state==='suspended') pcmCtx.resume().catch(()=>{});
+  if(audioCtx && audioCtx.state==='suspended'){
+    audioCtx.resume().catch(()=>{
+      if(listening){ sysNote('The microphone stopped while the tab was hidden — call ended.');
+                     endCall(); }
+    });
+  }
+});
+
+/* Playing (then discarding) ANY audio SYNCHRONOUSLY inside the click handler spends the user
+   gesture — that is what lets the LATER programmatic play() calls work after the mic prompt and
+   network round-trips. Call it FIRST, before any await, or it doesn't count. */
+function _unlockAudio(){
+  try{ new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=')
+        .play().catch(()=>{}); }catch(e){}
+  // The PCM sink plays through an AudioContext, which is a DIFFERENT object with the same
+  // gesture rule — unlocking the <audio> element alone leaves it suspended and silent.
+  try{
+    const c=pcmContext();
+    const s=c.createBufferSource();
+    s.buffer=c.createBuffer(1,1,22050); s.connect(c.destination); s.start();
+  }catch(e){}
+}
+async function startTalking(){
+  if(listening) return;
+  _unlockAudio();
+  endingCall=false; noReplyCount=0; closeRequested=false; clearNoReply();
+  await ensureWS();
+  listening=true;
+  $('btnStart').classList.add('on'); $('btnStart').textContent='● On the call';
+  $('btnStop').disabled=false;
+  getOpening();
+  if(!isChat()){
+    if(CONFIG.stt==='sarvam') await startMic(); else startRecog();
+  }
+  setPill('listening');
+  if(SC.outbound && !isChat()) armNoReply();                 // no "hello?" in 3s → agent speaks
+  else if(!callOpened){ callOpened=true; sendSilent('(Call connected.)'); }
+}
+function stopTalking(){
+  listening=false; clearNoReply(); noReplyCount=0; endingCall=false; closeRequested=false;
+  $('btnStart').classList.remove('on');
+  $('btnStart').textContent = SC.chat?'Start the chat':(SC.outbound?'Answer the call':'Call them');
+  $('btnStop').disabled=true;
+  stopMic(); stopRecog(); clearAudioQueue();
+  wsSend({type:'control',action:'stop'}); setPill('idle');
+}
+function restart(){
+  clearNoReply(); noReplyCount=0; endingCall=false; closeRequested=false; clearAudioQueue();
+  httpHistory=[]; turnsSent=0; callOpened=false; hudTurns=[]; $('hud').style.display='none';
+  $('convo').querySelectorAll('.msg,.typing,.note').forEach(n=>n.remove());
+  const b=$('brief'); if(b) b.style.display='';
+  renderGoals({});
+  wsSend({type:'control',action:'restart'});
+}
+async function sendTyped(){
+  const v=$('typebox').value.trim(); if(!v) return;
+  $('typebox').value='';
+  clearNoReply(); noReplyCount=0; closeRequested=false; endingCall=false;
+  turnsSent++; tEndOfSpeech=performance.now();
+  await ensureWS();
+  if(httpMode) postTurn({text:v});
+  else { waitingForServer=true;
+         wsSend({type:'turn_text',text:v,scenario:sessionScenario,lang:sessionLang,
+                 disclose:disclose}); }
+}
+
+/* ── Mic capture: AudioWorklet + energy VAD ─────────────────────────────── */
+let capturing=false, speechFrames=[], preRoll=[], silentSamples=0, speechSamples=0,
+    voicedSamples=0, srate=48000;
+/* SILENCE_END 420: a natural mid-sentence pause in Hindi was being cut as end-of-turn at 350.
+   MIN_SPEECH 180: real one-word answers ("हाँ", "yes") were discarded as non-speech at 300. */
+const PREROLL_MS=300, SILENCE_END_MS=420, MIN_SPEECH_MS=180, MAX_TURN_MS=15000;
+const MIN_COMPLETE_MS=700, FRAGMENT_WAIT_MS=1100;
+
+async function startMic(){
+  try{
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
+      echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+  }catch(e){
+    // NEVER a blocking alert() here. On in-app webviews it can render off-screen, and because
+    // it blocks the JS thread the opener never runs: no voice, no reply, the call looks dead.
+    sysNote('Microphone unavailable here — you can still type to the agent below.');
+    return;
+  }
+  audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  srate=audioCtx.sampleRate;
+  await audioCtx.audioWorklet.addModule('/static/pcm-worklet.js');
+  sourceNode=audioCtx.createMediaStreamSource(micStream);
+  workletNode=new AudioWorkletNode(audioCtx,'pcm-processor');
+  workletNode.port.onmessage=e=>onPcm(e.data);
+  sourceNode.connect(workletNode); workletNode.connect(audioCtx.destination);
+  capturing=false; speechFrames=[]; preRoll=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+}
+function stopMic(){
+  try{ if(workletNode){ workletNode.port.onmessage=null; workletNode.disconnect(); } }catch(e){}
+  try{ if(sourceNode) sourceNode.disconnect(); }catch(e){}
+  try{ if(micStream) micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  try{ if(audioCtx) audioCtx.close(); }catch(e){}
+  workletNode=sourceNode=micStream=audioCtx=null; capturing=false; speechFrames=[];
+}
+let muteUntil=0;
+function armed(){ return listening && !waitingForServer && !playing && performance.now()>muteUntil; }
+
+function onPcm(chunk){
+  // Keep the pre-roll ring FILLING whenever the mic is open and the agent isn't speaking —
+  // including the post-playback mute window. Returning early on !armed() made that window a
+  // dead zone, so a caller who answered the instant the agent finished lost their first word.
+  if(playing || !listening) return;
+  const n=chunk.length;
+  let sum=0; for(let i=0;i<n;i++){ const s=chunk[i]; sum+=s*s; }
+  const rms=Math.sqrt(sum/n);
+  document.documentElement.style.setProperty('--amp',Math.min(1,rms/0.05).toFixed(3));
+  const startT=parseFloat($('sens').value), silT=startT*0.6, preMax=srate*PREROLL_MS/1000;
+
+  if(!capturing){
+    preRoll.push(chunk);
+    let total=preRoll.reduce((a,c)=>a+c.length,0);
+    while(total>preMax&&preRoll.length>1){ total-=preRoll.shift().length; }
+    if(armed()&&rms>startT){
+      capturing=true; speechFrames=preRoll.slice(); preRoll=[];
+      speechSamples=speechFrames.reduce((a,c)=>a+c.length,0);
+      silentSamples=0; voicedSamples=0; clearNoReply();
+      micStreamOpen = STREAM_MIC && !httpMode && ws && ws.readyState===1;
+      if(micStreamOpen){ wsSend({type:'mic_start',sample_rate:16000}); streamSent=0; }
+    }
+  }else{
+    speechFrames.push(chunk); speechSamples+=n;
+    if(micStreamOpen) pumpMicStream(false);
+    if(rms<silT) silentSamples+=n; else { silentSamples=0; voicedSamples+=n; }
+    const voicedMs=voicedSamples/srate*1000;
+    // A complete phrase ends fast; a fragment gets longer to finish. This is what stops the
+    // agent cutting people off mid-thought without making every turn feel sluggish.
+    const endPauseMs=(voicedMs>=MIN_COMPLETE_MS)?SILENCE_END_MS:FRAGMENT_WAIT_MS;
+    if(silentSamples>=srate*endPauseMs/1000 || speechSamples>=srate*MAX_TURN_MS/1000) endTurn();
+  }
+}
+/* Streamed mic upload: ship audio WHILE the caller is still speaking, so at end-of-turn only
+   the last ~250ms remains — the whole-utterance upload no longer sits between "caller stopped"
+   and "agent starts thinking". */
+// 100ms rather than 250ms: at 16 kHz mono that is 3.2 KB a frame, negligible bandwidth, and
+// it removes up to 150ms of tail quantisation between the caller stopping and the last frame
+// reaching the server.
+const STREAM_MIC=true, STREAM_CHUNK_MS=100;
+let micStreamOpen=false, streamSent=0;
+function pumpMicStream(flush){
+  const totalLen=speechFrames.reduce((a,c)=>a+c.length,0), pending=totalLen-streamSent;
+  if(pending<=0) return;
+  if(!flush && pending<srate*STREAM_CHUNK_MS/1000) return;
+  if(!(ws&&ws.readyState===1)){ micStreamOpen=false; return; }
+  const all=new Float32Array(pending); let o=0, skip=streamSent;
+  for(const f of speechFrames){
+    if(skip>=f.length){ skip-=f.length; continue; }
+    const part=skip? f.subarray(skip): f; skip=0;
+    all.set(part,o); o+=part.length;
+  }
+  streamSent=totalLen;
+  ws.send(floatTo16(downsample(all,srate,16000)).buffer);
+}
+function endTurn(){
+  capturing=false; clearNoReply();
+  const streamed=micStreamOpen; micStreamOpen=false;
+  const frames=speechFrames;
+  const durMs=frames.reduce((a,c)=>a+c.length,0)/srate*1000;
+  if(durMs<MIN_SPEECH_MS){                       // a cough, a click, a door
+    speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+    if(streamed) wsSend({type:'mic_abort'});
+    if(listening&&!endingCall) armNoReply();
+    return;
+  }
+  noReplyCount=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
+  tEndOfSpeech=performance.now();                // the clock the HUD reports
+  if(streamed&&ws&&ws.readyState===1){
+    pumpMicStream(true);
+    speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+    wsSend({type:'mic_end',duration_ms:Math.round(durMs)});
+    return;
+  }
+  speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+  let len=0; frames.forEach(f=>len+=f.length);
+  const all=new Float32Array(len); let o=0; frames.forEach(f=>{ all.set(f,o); o+=f.length; });
+  const wav=encodeWAV(floatTo16(downsample(all,srate,16000)),16000);
+  if(httpMode){ postTurn({wav}); return; }
+  if(ws&&ws.readyState===1) ws.send(wav);
+}
+function rearm(){
+  if(listening && CONFIG.stt==='sarvam' && audioCtx) setPill('listening');
+  if(listening && CONFIG.stt!=='sarvam' && !playing && !waitingForServer) startRecog();
+}
+function downsample(buf,inRate,outRate){
+  if(outRate>=inRate) return buf;
+  const ratio=inRate/outRate, newLen=Math.round(buf.length/ratio), out=new Float32Array(newLen);
+  let oi=0, ii=0;
+  while(oi<newLen){
+    const nextI=Math.round((oi+1)*ratio); let sum=0,cnt=0;
+    for(let i=ii;i<nextI&&i<buf.length;i++){ sum+=buf[i]; cnt++; }
+    out[oi]=cnt?sum/cnt:0; oi++; ii=nextI;
+  }
+  return out;
+}
+function floatTo16(f32){
+  const out=new Int16Array(f32.length);
+  for(let i=0;i<f32.length;i++){ const s=Math.max(-1,Math.min(1,f32[i])); out[i]=s<0?s*0x8000:s*0x7FFF; }
+  return out;
+}
+function encodeWAV(samples,sr){
+  const buf=new ArrayBuffer(44+samples.length*2), view=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); view.setUint32(4,36+samples.length*2,true); w(8,'WAVE');
+  w(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+  view.setUint32(24,sr,true); view.setUint32(28,sr*2,true); view.setUint16(32,2,true);
+  view.setUint16(34,16,true); w(36,'data'); view.setUint32(40,samples.length*2,true);
+  let off=44; for(let i=0;i<samples.length;i++){ view.setInt16(off,samples[i],true); off+=2; }
+  return buf;
+}
+
+/* ── Web Speech fallback (no Sarvam key) ────────────────────────────────── */
+function startRecog(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ sysNote('This browser has no speech recognition — type to the agent instead.'); return; }
+  if(recog){ try{ recog.start(); }catch(e){} return; }
+  recog=new SR(); recog.lang=langCode(); recog.continuous=false; recog.interimResults=false;
+  recog.onresult=e=>{
+    const t=e.results[0][0].transcript;
+    clearNoReply(); noReplyCount=0; turnsSent++; tEndOfSpeech=performance.now();
+    if(httpMode){ postTurn({text:t}); return; }
+    waitingForServer=true; setPill('transcribing');
+    wsSend({type:'turn_text',text:t,scenario:sessionScenario,lang:sessionLang,disclose:disclose});
+  };
+  recog.onend=()=>{ if(listening&&!waitingForServer&&!playing){ try{ recog.start(); }catch(e){} } };
+  try{ recog.start(); }catch(e){}
+}
+function stopRecog(){ if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){} recog=null; } }
+
+/* ── Streaming PCM playback ─────────────────────────────────────────────
+   Raw int16 chunks scheduled sample-exactly on a shared AudioContext. Chosen over
+   MediaSource (unreliable on iOS, and it adds its own 50-150ms of startup) and over chaining
+   <audio> blobs (each MP3 chunk carries ~26ms of encoder-delay silence, which is the audible
+   seam that made the sibling builds give up on splitting a reply at all).
+
+   int16 -> Float32 is a memcpy, so there is no decode cost and no gap between chunks. */
+let pcmCtx=null, pcmRate=0, pcmNext=0, pcmLive=new Set(), pcmFirst=false;
+const PCM_JITTER=0.08;   // 80ms of slack: below this a network hiccup underruns audibly
+
+function pcmContext(){
+  if(!pcmCtx){
+    pcmCtx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+  }
+  if(pcmCtx.state==='suspended') pcmCtx.resume().catch(()=>{});
+  return pcmCtx;
+}
+function startPcm(rate){
+  if(capturing) return;                    // caller is mid-sentence — never talk over them
+  pcmRate=rate||22050; pcmNext=0; pcmFirst=false;
+  playing=true; setPill('speaking');
+}
+function pushPcm(buf){
+  if(!pcmRate) return;
+  const ctx=pcmContext(), ep=audioEpoch;
+  const i16=new Int16Array(buf), n=i16.length;
+  if(!n) return;
+  const ab=ctx.createBuffer(1,n,pcmRate), ch=ab.getChannelData(0);
+  for(let i=0;i<n;i++) ch[i]=i16[i]/32768;
+  const now=ctx.currentTime;
+  if(pcmNext < now+0.005) pcmNext = now + PCM_JITTER;    // (re)prime after a stall
+  const src=ctx.createBufferSource();
+  src.buffer=ab; src.connect(ctx.destination);
+  src.start(pcmNext);
+  pcmNext += ab.duration;
+  pcmLive.add(src);
+  src.onended=()=>{ pcmLive.delete(src);
+    if(ep===audioEpoch && pcmLive.size===0 && !pcmRate){ playing=false; afterPlay(); } };
+  pcmFirst=true;
+}
+function endPcm(){
+  pcmRate=0;
+  if(pcmLive.size===0){ playing=false; afterPlay(); }    // nothing arrived, or already drained
+}
+function stopPcm(){
+  pcmRate=0; pcmNext=0;
+  for(const s of pcmLive){ try{ s.stop(); }catch(e){} }
+  pcmLive.clear();
+}
+
+/* ── Playback (gates the mic so the agent never hears itself) ───────────── */
+let audioQ=[], qActive=false, streamDone=false, audioEpoch=0;
+function clearAudioQueue(){
+  audioQ=[]; qActive=false; streamDone=false; playing=false; audioEpoch++;
+  stopPcm();
+  if(currentAudio){ try{ currentAudio.pause(); }catch(e){} }
+}
+function playAudio(blob){
+  if(capturing) return;                 // the caller is mid-sentence — never talk over them
+  if(!qActive) streamDone=false;
+  audioQ.push(blob);
+  if(!qActive) drainAudio();
+}
+function drainAudio(){
+  if(audioQ.length===0){ qActive=false; if(streamDone){ playing=false; afterPlay(); } return; }
+  qActive=true; playing=true; setPill('speaking');
+  const url=URL.createObjectURL(audioQ.shift()), a=new Audio(url); currentAudio=a;
+  const done=()=>{ try{ URL.revokeObjectURL(url); }catch(e){} drainAudio(); };
+  a.onended=done; a.onerror=done; a.play().catch(done);
+}
+function endOfStream(){
+  streamDone=true;
+  // The server sends status:idle right after the last PCM chunk, but the audio is SCHEDULED
+  // ahead of the clock and still playing. Re-arming the mic here would open it while the
+  // agent is mid-sentence — afterPlay() comes from the last source's onended instead.
+  if(pcmRate || pcmLive.size) return;
+  if(!qActive&&audioQ.length===0){ playing=false; afterPlay(); }
+}
+function afterPlay(){
+  // Speaker-tail guard, and clear the pre-roll so nothing recorded during the agent's own line
+  // can be prepended to the caller's next utterance.
+  muteUntil=performance.now()+200; preRoll=[];
+  if(endingCall){ endCall(); return; }
+  if(listening||isChat()){ setPill('listening'); rearm(); armNoReply(); }
+  else setPill('idle');
+}
+</script>
+</body>
+</html>
