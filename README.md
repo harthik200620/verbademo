@@ -110,41 +110,74 @@ mind, a wrong number. Each says what correct handling looks like. It turns "we h
 cases" into something a prospect can try to break.
 
 ---
-
 ## Measured latency
 
-Numbers from this machine on 2026-07-25, warm connections, typed turns (so no STT), median of
-a session. **These are measurements, not estimates.**
+Numbers from this machine on 2026-07-29, warm connections. **These are measurements, not
+estimates**, and where an earlier claim in this file turned out to be wrong it is corrected
+below rather than quietly edited.
 
-| Stage | Before | After | Note |
-|---|---:|---:|---|
-| LLM | 1266–1403 ms | 1266–1403 ms | unchanged — this is 78% of the turn |
-| TTS, first sound | 436–449 ms | **216–279 ms** | streamed PCM instead of a full blob |
-| Turn total | ~1.9–2.2 s | **~1.6–1.9 s** | |
+### End-of-turn detection and STT
 
-Two findings worth keeping:
+Streaming the mic into Sarvam's socket instead of POSTing a WAV once the caller stops. p50 of
+three runs per row, **including the cost of falling back to the batch call when the socket
+returns nothing**:
 
-- **Streaming Gemini would buy roughly nothing here.** The plan estimated 350–550 ms from
-  server-sent events feeding clause-by-clause TTS. That win only exists when a reply has a
-  second clause to overlap — and Rule #2 caps replies at one sentence under twelve words,
-  because short replies are simply better on a phone call. You cannot hide LLM generation
-  behind TTS when there is only one clause. Real trade-off, and short-and-correct wins.
-- **ElevenLabs 404s on Telugu for this account.** `TELUGU_TTS` was set to `elevenlabs`, so
-  every Telugu turn burned 826 ms failing before falling back to Sarvam. Now set to `sarvam`
-  directly: 826 ms saved per Telugu turn, and one fewer failure path.
+| utterance | audio | streamed | batch | saved |
+|---|---:|---:|---:|---:|
+| very short | 604 ms | 191 ms | 222 ms | 31 ms |
+| short | 975 ms | 193 ms | 309 ms | 116 ms |
+| medium | 4.3 s | 189 ms | 388 ms | 199 ms |
+| long | 10.8 s | 187 ms | 711 ms | **524 ms** |
 
-Also changed: `GEMINI_HEDGE_AFTER_MS` 3500 → 2200, because the measured p50 is ~1400 ms with
-observed spikes to 5900 ms — the old threshold never fired on the tail that actually hurts.
+The shape is the point: **streaming is flat at ~190 ms however long the caller talked**, because
+the audio went up while they were still speaking. The batch call grows with the utterance, so
+the longer someone talks the more this wins.
 
-**The honest ceiling.** Roughly 500 ms is irreducible before the model does anything
-(ElevenLabs from South Asia ~150 ms, a humane end-of-turn pause ~200 ms, jitter buffer
-~80 ms). The rest is Gemini generation on free-tier keys. p95 stays around 2.5–3 s and is
-dominated by that pool — **do not quote a p95 to a prospect.** Paid keys close it.
+Getting there needed one fix that measurement forced. Sarvam gives no "last segment" marker, so
+`finish()` waits for a quiet gap — and the original 2.5 s deadline was also being used to wait
+for the FIRST segment. Measured, a segment either lands **15-16 ms** after flush or never lands
+at all (its own VAD discards very short clips, and the socket then stays open rather than
+closing, so waiting for it to close never fires either). A dropped "yes, that's right" therefore
+cost 2574 ms and *then* fell back to a 266 ms batch call — twenty times slower than not
+streaming. Two deadlines now: 300 ms for the first segment, 2.5 s overall once they are flowing.
 
-The on-screen HUD reports time from your last word to the agent's first sound, with a
-per-turn waterfall and session median, so the number is shown rather than claimed.
+Plus ~140 ms from the VAD itself — end-of-turn fires 280 ms after the last syllable instead of a
+420 ms floor, because the tolerant silence accumulator no longer needs padding to survive a
+mid-sentence breath.
 
----
+### What the previous version of this file got wrong
+
+> *"Streaming Gemini would buy roughly nothing here."*
+
+Half right, and the wrong half mattered. It is true that clause-by-clause **overlap** buys
+nothing when Rule #2 caps a reply at one sentence — one sentence is one clause, and there is no
+second clause to hide generation behind. But overlap was never the only benefit:
+
+- the **TTS socket handshake** now happens *during* Gemini's time-to-first-token instead of
+  after it, which has nothing to do with clause count;
+- `chunk_length_schedule` starts synthesis after ~50 characters, so audio generation overlaps
+  the last third of even a short reply;
+- SSE makes a **stalled key visible at first token** instead of at the deadline. The blocking
+  call could not see it at all, and that is worth seconds on a bad turn.
+
+### The part no pipeline work removes
+
+Gemini's time-to-first-token on this free-tier pool is **~1.25-1.5 s of fixed overhead** — a
+one-word reply costs the same as a full sentence, and dropping `thinkingLevel: minimal` triples
+it. That is 55-70% of what remains.
+
+The backchannel acks are the honest answer: a pre-cached "Mm-hmm..." lands **260 ms** after the
+caller stops, the way a person hums while thinking. It does not make the pipeline faster and is
+not reported as though it did — it changes what the wait *feels* like, which is a different and
+smaller claim.
+
+**Do not quote a p95 to a prospect.** It is dominated by the free key pool, not by this code.
+Paid keys are the only thing that moves that floor.
+
+The HUD reports time from your last word to the agent's first sound, with a per-turn waterfall
+and a session median. `first_audio_ms` is the headline; the TTS band is drawn as the part of the
+wait *not* already explained by the LLM, so when the overlap works it visibly collapses toward
+zero.
 
 ## Layout
 
@@ -170,9 +203,38 @@ python tests/test_verbalize.py        # pronunciation, ~110 assertions, offline
 python tests/test_llm_textcall.py     # text-serialised calls + the speech guard, offline
 python tests/test_language_switch.py  # mid-call switching, offline
 python tests/test_tools_validate.py   # tool guards + abandoned-call recording, offline
+python tests/test_join_segments.py    # STT segment stitching across a socket seam, offline
+python tests/test_sse_parity.py       # streaming transport == blocking transport, offline
+python tests/test_clause_stream.py    # splitting never changes what is SPOKEN, offline
+python tests/test_stream_guard.py     # the two captured live leaks, offline
+python tests/test_http_path.py        # streaming stays out of /api/turn, offline
 python tests/dryrun.py all            # all 10 scenarios against the real model
 python tests/dryrun.py collections hindi
 ```
+
+Four of those exist because of the streaming port, and each pins down something that would
+otherwise fail silently on a live call rather than in CI:
+
+- **`test_clause_stream.py`** is the important one. `verbalize.for_speech` turns digits into
+  words on the way to the speaker; whole-text it reads "₹8,400" as "eight thousand four hundred
+  rupees", but clause-by-clause it can see "…₹8," and then "400…" and say "eight rupees" …
+  "four hundred". Both halves are individually plausible, nothing errors, and the only symptom
+  is a wrong price quoted to a customer. The whole contract is one assertion —
+  `join(for_speech(c) for c in clauses) == for_speech(text)` — checked over 24 replies in three
+  languages, fed **character by character** the way SSE actually delivers them. It caught a real
+  defect on its first run: `"Rs."` at the end of the buffer is indistinguishable from a sentence
+  end until the digits arrive, so the splitter now waits two characters before judging one.
+- **`test_stream_guard.py`** replays the two failures this project caught on live calls — ~380
+  words of chain-of-thought read aloud, and `fn:default_api:qualify_lead{…}` spoken verbatim —
+  and asserts nothing at all is spoken. "Nothing", not "less": a half-spoken chain of thought is
+  worse than a late reply, so a rejection aborts the whole spoken path.
+- **`test_sse_parity.py`** asserts the streaming transport returns byte-identical `parts` to the
+  blocking one. Everything downstream — tool dispatch, `validate()`, identity forcing, the
+  speech guard — reads that shape, so if the two diverge all of it behaves differently depending
+  on a transport flag.
+- **`test_http_path.py`** replaces the streaming entry points with landmines and drives a real
+  turn through `/api/turn`. It caught `gemini_turn` selecting the SSE transport from the module
+  flag alone, which would have changed the Vercel path silently.
 
 `dryrun.py` plays a scripted caller — including corrections, refusals and half answers —
 through a scenario and reports per-turn latency, reply length, and whether an outcome was
@@ -193,6 +255,21 @@ score as the most verbose. Measured raw, `reception` looked like 22w; measured p
 
 ## Deploying
 
-`vercel.json` is included and the HTTP path works there, but Vercel cannot hold a WebSocket,
-so it falls back to request/response and loses the streamed audio. For the fast version, run
-it on a host that keeps a process alive (Render, Railway, Fly) or locally for a live pitch.
+Two hosts, deliberately, because they are not equivalent.
+
+**Render** (`render.yaml`) keeps a process alive, so `/ws` works and everything above is
+active. This is the one worth sending someone. Connect the repo as a Blueprint, then paste
+`.env` into the environment editor in one go — and make sure `STREAM_STT`, `STREAM_LLM`,
+`STREAM_TTS` and `ACK_CLIPS` are all `1`, since they ship off. On the free plan the service
+spins down after 15 minutes idle and cold-starts in ~50 s, so open the link a minute before a
+pitch; the Starter plan removes that.
+
+**Vercel** (`vercel.json`) stays live as the stable shareable link, but serverless cannot hold
+a WebSocket. There the mic uploads as one blob, the reply synthesises as one blob, and every
+streaming optimisation is inert — it still works, just at roughly the latency this build
+started from. `test_http_path.py` exists to keep that path from breaking by accident.
+
+`ELEVENLABS_API_KEY_2` and `_3` are read automatically for rotation. The free tier is 10,000
+characters a month, which a day of testing will exhaust; when every key is spent the agent
+falls back to Sarvam Bulbul for all three languages and keeps working, so a dead key is a
+change of voice rather than a broken demo.

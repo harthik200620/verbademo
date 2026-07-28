@@ -18,6 +18,7 @@ What is NEW here versus the siblings:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -192,6 +193,9 @@ def _should_rotate(status: int, text: str) -> bool:
 last_attempt_count = 0
 last_served_by = ""
 last_hedged = False
+# True when the streaming speech guard rejected the spoken path this turn, so main.py knows
+# to discard whatever the socket had already emitted and re-synthesise the whole reply.
+last_stream_aborted = False
 _cooldown: dict[int, float] = {}
 
 
@@ -326,6 +330,256 @@ async def _generate(contents: list, scenario: str, lang: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Streaming transport (:streamGenerateContent)
+# ─────────────────────────────────────────────────────────────────────────────
+# With :generateContent nothing exists until the WHOLE reply has been written, so a key that
+# stalls is indistinguishable from one that is merely slow until the very end. Streaming makes
+# the FIRST TOKEN observable, which is what lets a stall be detected and escalated at 2.5s
+# instead of being discovered at the deadline.
+#
+# Honest note on the median: replies here are capped at one sentence, so there is usually only
+# ONE clause and nothing to overlap. This change is a TAIL fix, not a median one. The median win
+# comes in Phase 5, from opening the TTS socket during time-to-first-token.
+_URL_STREAM = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               "{model}:streamGenerateContent")
+STREAM_LLM = _clean("STREAM_LLM", "0").lower() not in ("0", "false", "no", "off")
+# No first token by this -> fire a backup key. 1200 was tried upstream and fired on every single
+# turn; 1800 was measured and reverted because escalating that eagerly burns keys per minute and
+# on a rate-limited pool the extra 429s made p50 WORSE. Healthy first-token here is ~1.25-1.5s.
+_TTFT_STALL_MS = _int_env("GEMINI_TTFT_STALL_MS", 2500)
+_TTFT_GIVEUP_MS = _int_env("GEMINI_TTFT_GIVEUP_MS", 4500)
+_MAX_RACE = _int_env("GEMINI_MAX_RACE", 2)
+# Concurrency while REPLACING REJECTED keys, not while speculating. At 3 the p50 went
+# 2501ms -> 7483ms upstream; 1 keeps a 429 cascade moving without becoming a burst.
+_MAX_INFLIGHT_ERR = _int_env("GEMINI_MAX_INFLIGHT_ERR", 1)
+_MAX_KEYS_PER_TURN = _int_env("GEMINI_MAX_KEYS_PER_TURN", 20)
+_DEBUG = _clean("GEMINI_DEBUG", "0").lower() not in ("0", "false", "no", "off")
+
+
+async def _sse_pump(key_idx: int, model: str, body: dict, out: asyncio.Queue, tag: int) -> None:
+    """Run ONE streaming request, pushing (tag, kind, status, payload) onto a shared queue.
+
+    'done' is pushed only after the response is fully closed, so a finished pump is safe to
+    cancel without leaving a half-read connection in the keep-alive pool."""
+    finished = False
+    try:
+        async with _http.client().stream(
+            "POST", _URL_STREAM.format(model=model),
+            params={"key": _KEYS[key_idx], "alt": "sse"}, json=body,
+        ) as resp:
+            if resp.status_code >= 400:
+                detail = (await resp.aread()).decode("utf-8", "replace")
+                await out.put((tag, "err", resp.status_code, detail[:200]))
+                return
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    await out.put((tag, "chunk", 0, json.loads(raw)))
+                except json.JSONDecodeError:
+                    continue
+            finished = True
+        if finished:
+            await out.put((tag, "done", 0, None))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        await out.put((tag, "err", 0, str(exc)[:200]))
+
+
+async def _generate_stream(contents: list, scenario: str, lang: str,
+                           force_tool: bool = False, on_clause=None,
+                           disclose: bool = True) -> dict:
+    """Streaming twin of _generate(): same inputs, and deliberately the SAME return shape.
+
+    The only difference is that complete clauses are handed to `on_clause` the moment they are
+    ready. Returning an identical {"candidates":[{"content":{"parts":[…]}}]} is the point —
+    gemini_turn's tool dispatch, validate() gate, text-function-call recovery, identity forcing
+    and the speech guard all keep working unchanged, which is a testable claim.
+    """
+    global _fresh_idx, last_attempt_count, last_served_by, last_hedged
+    if not _KEYS:
+        raise RuntimeError("No Gemini API key set")
+    system_text = build_system_prompt(_today(), scenario, lang, disclose)
+    tools = [{"functionDeclarations": tools_for(scenario)}]
+    tool_config = {"functionCallingConfig": {"mode": "ANY" if force_tool else "AUTO"}}
+    last_attempt_count = 0
+    last_served_by = ""
+    last_hedged = False
+    last_err = None
+    all_cooling = all(_cooldown.get(i, 0) > time.time() for i in range(len(_KEYS)))
+
+    def _body_for(key_idx: int) -> tuple[str, dict]:
+        model = _model_for_key_idx(key_idx)
+        gen_config = {"temperature": 0.7, "maxOutputTokens": _max_tokens_for(model)}
+        thinking = _thinking_config_for(model)
+        if thinking:
+            gen_config["thinkingConfig"] = thinking
+        return model, {
+            "systemInstruction": {"parts": [{"text": system_text}]},
+            "contents": contents,
+            "tools": tools,
+            "toolConfig": tool_config,
+            "generationConfig": gen_config,
+        }
+
+    # Fresh tier first, reserve tier second, cooling keys last — a cooldown cascade must degrade
+    # to "try anyway", never to a failed turn (the same rule _generate's two-pass walk enforces).
+    hot, cold = [], []
+    for tier in (_FRESH_ORDER, _OTHER_ORDER):
+        for k in tier:
+            (cold if (not all_cooling and _cooldown.get(k, 0) > time.time()) else hot).append(k)
+    if hot:                                   # rotate so traffic spreads across the fresh tier
+        _fresh_idx = (_fresh_idx + 1) % len(hot)
+        hot = hot[_fresh_idx:] + hot[:_fresh_idx]
+    order = (hot + cold) or list(range(len(_KEYS)))
+
+    turn_deadline = time.monotonic() + _TTFT_GIVEUP_MS / 1000
+    for attempt, primary in enumerate(order):
+        if time.monotonic() >= turn_deadline or last_attempt_count >= _MAX_KEYS_PER_TURN:
+            break
+        q: asyncio.Queue = asyncio.Queue()
+        tasks: dict[int, asyncio.Task] = {}
+        meta: dict[int, tuple[int, str]] = {}
+        winner = None
+
+        def _launch(key_idx: int, tag: int) -> None:
+            model, body = _body_for(key_idx)
+            meta[tag] = (key_idx, model)
+            tasks[tag] = asyncio.ensure_future(_sse_pump(key_idx, model, body, q, tag))
+
+        try:
+            _launch(primary, 0)
+            last_attempt_count += 1
+            # `fired` = keys launched in this block (also the index into `order` for the next).
+            # `raced` counts only SPECULATIVE launches — the stall escalations — and is what
+            # _MAX_RACE bounds. Keeping them separate stops error-replacement below from
+            # spending the speculation budget and leaving a genuine stall with no backup.
+            first_chunk, fired, raced = None, 1, 1
+            next_deadline = time.monotonic() + _TTFT_STALL_MS / 1000
+            while tasks and winner is None:
+                # ESCALATING stagger, not simultaneous racing: on a healthy turn (~1.4s TTFT)
+                # not one extra request is ever sent, so the burst rate that 429s this pool is
+                # unchanged. Each further _TTFT_STALL_MS of total silence adds one more key.
+                more = order[attempt + fired] if attempt + fired < len(order) else None
+                budget = turn_deadline - time.monotonic()
+                if budget <= 0:
+                    break
+                can_escalate = (more is not None and raced < _MAX_RACE
+                                and last_attempt_count < _MAX_KEYS_PER_TURN)
+                wait_s = max(0.01, min(next_deadline - time.monotonic(), budget)
+                             if can_escalate else budget)
+                try:
+                    tag, kind, status, payload = await asyncio.wait_for(q.get(), timeout=wait_s)
+                except asyncio.TimeoutError:
+                    if not can_escalate or time.monotonic() >= turn_deadline:
+                        break                       # out of budget — stop waiting on this turn
+                    if _DEBUG:
+                        print(f"  [gem] key{meta[fired - 1][0] + 1} silent >{_TTFT_STALL_MS}ms "
+                              f"— escalating to key{more + 1}", flush=True)
+                    _launch(more, fired)
+                    fired += 1
+                    raced += 1
+                    last_hedged = True
+                    last_attempt_count += 1
+                    next_deadline = time.monotonic() + _TTFT_STALL_MS / 1000
+                    continue
+                if kind == "chunk":
+                    winner, first_chunk = tag, payload
+                    break
+                k, m = meta[tag]
+                if kind == "err":
+                    last_err = f"Gemini {status or ''} (key {k + 1}, {m}): {payload}"
+                    if _DEBUG:
+                        print(f"  [gem] key{k + 1} {m} ERR {status} {str(payload)[:110]}",
+                              flush=True)
+                    if _should_rotate(status, payload or ""):
+                        _cooldown[k] = time.time() + (60 if status == 429 else 15)
+                tasks.pop(tag, None)
+                # REPLACE A FAILED KEY IMMEDIATELY, IN PLACE. Letting `tasks` drain to empty
+                # falls out to the outer loop, which relaunches exactly one key — so a 429
+                # cascade runs STRICTLY SERIALLY at ~500ms per rejection (measured upstream:
+                # 6978ms walking 13 keys). This is NOT speculative racing: it fires solely in
+                # response to a rejection already received.
+                if (len(tasks) < _MAX_INFLIGHT_ERR
+                        and last_attempt_count < _MAX_KEYS_PER_TURN
+                        and time.monotonic() < turn_deadline):
+                    nxt = order[attempt + fired] if attempt + fired < len(order) else None
+                    if nxt is not None:
+                        _launch(nxt, fired)
+                        fired += 1
+                        last_attempt_count += 1
+                        next_deadline = time.monotonic() + _TTFT_STALL_MS / 1000
+            if winner is None:
+                continue                        # nothing came back on this key — try the next
+            for tag, t in tasks.items():
+                if tag != winner and not t.done():
+                    t.cancel()
+            key_idx, model = meta[winner]
+            _cooldown.pop(key_idx, None)
+            last_served_by = f"key{key_idx + 1}/{model}"
+
+            full_text, held, extra_parts, saw_tool = "", "", [], False
+            chunk = first_chunk
+            while True:
+                for part in _parts_of(chunk):
+                    piece = part.get("text")
+                    if isinstance(piece, str):
+                        full_text += piece
+                        held += piece
+                    elif part:
+                        extra_parts.append(part)   # functionCall (+ thoughtSignature) kept whole
+                        saw_tool = True
+                # Stop speaking the moment a tool call appears: what is said after one is decided
+                # by gemini_turn (its own text, a fallback line, a re-ask, or a second turn) —
+                # never by this stream.
+                if on_clause and not saw_tool:
+                    while True:
+                        clause, held = _next_clause(held)
+                        if not clause:
+                            break
+                        say = _speakable(clause)
+                        if say:
+                            await on_clause(say)
+                nxt = None
+                while True:                        # next event from the winning stream only
+                    tag, kind, status, payload = await q.get()
+                    if tag != winner:
+                        continue                   # a cancelled loser's straggler — ignore
+                    if kind == "chunk":
+                        nxt = payload
+                    elif kind == "err":
+                        last_err = f"Gemini stream cut (key {key_idx + 1}): {payload}"
+                    break
+                if nxt is None:
+                    break
+                chunk = nxt
+            if on_clause and not saw_tool:
+                say = _speakable(held)             # flush the tail
+                if say:
+                    await on_clause(say)
+
+            parts = ([{"text": full_text}] if full_text else []) + extra_parts
+            return {"candidates": [{"content": {"parts": parts or [{"text": ""}]}}]}
+        finally:
+            for t in tasks.values():
+                if not t.done():
+                    t.cancel()
+            # A key that never produced a first token is stalling even though it never returned
+            # a status worth rotating on. Cool it too, or the next turn picks the same throttled
+            # keys straight away — measured upstream: four consecutive turns timing out on the
+            # same five keys while the other 99 sat idle and healthy.
+            for tag, (k, _m) in meta.items():
+                if tag != winner:
+                    _cooldown[k] = max(_cooldown.get(k, 0), time.time() + 20)
+
+    raise RuntimeError("All Gemini keys exhausted (stream) — " + (last_err or "quota/invalid"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Text-serialised function calls
 # ─────────────────────────────────────────────────────────────────────────────
 # Gemini intermittently writes a function call into its TEXT output instead of emitting a
@@ -456,6 +710,215 @@ def _speak_or_fallback(own: str, tool: str | None, lang: str) -> str:
     return fallback_line(tool, lang) if tool else _reask(lang)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Clause splitting — peel speakable pieces off a reply that is still being written
+# ─────────────────────────────────────────────────────────────────────────────
+_CLAUSE_HARD, _CLAUSE_SOFT = "।?!.…\n", ",;:—"
+_CLAUSE_MIN, _CLAUSE_SOFT_MIN, _CLAUSE_MAX = 12, 75, 110
+
+# A trailing honorific must NEVER become its own clause. Reported upstream from a real call as
+# "it takes a gap and says sir in a high pitch", and reproduced exactly: "…per bag, sir." split
+# into ["…per bag,"] + ["sir."]. The first fragment is what gets flush:true at the synthesiser,
+# so a COMMA-TERMINATED FRAGMENT is rendered as a finished utterance — which is why the sentence
+# never falls at the end — and "sir." then becomes a separate one. prompts.py actively asks for
+# "sir"/"जी" mid-call, so this fires constantly rather than occasionally.
+_VOCATIVE = re.compile(r"^[\s,]*(?:sir|madam|ji|जी|जनाब|అండి|గారు)\b[\s,;:—.!?]*$", re.IGNORECASE)
+_CLAUSE_TAIL_MIN = 14
+
+# NUMBER PROTECTION. verbalize.for_speech() turns digits into words on the way to the speaker,
+# and under streaming it runs on a CLAUSE rather than the whole reply. The soft terminators
+# above include "," and ":" — neither of which is digit-guarded the way "." is — so without
+# this a split lands inside a number and each half is verbalised on its own:
+#
+#   "₹8,400"  -> "…₹8," + "400…"   spoken as "eight rupees" … "four hundred"
+#   "11:30"   -> "11:"  + "30"      spoken as "eleven" … "thirty"
+#
+# A split is refused if it falls strictly inside one of these. Refusing can only ever DELAY a
+# split — the tail is flushed intact at end of stream — so the worst case is a fractionally
+# later first chunk, never a lost or mangled word. Same invariant _tail_ok relies on.
+_PROTECT = re.compile(
+    r"(?:₹|\bRs\.?\s?|\bINR\s?)\s*\d[\d,]*(?:\.\d{1,2})?"   # money, incl. "Rs." and grouping
+    r"|\+?\d[\d\s-]{8,}\d"                                   # phone-shaped digit runs
+    r"|\b\d{1,2}:\d{2}\b"                                    # times
+    r"|\b\d{1,3}(?:,\d{2,3})+(?:\.\d+)?\b"                   # grouped numerals
+    r"|\b[A-Z]{2,5}\s?-\s?\d{2,10}\b"                        # reference ids
+    r"|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",              # dates
+    re.IGNORECASE,
+)
+# The buffer can also simply END mid-number ("… total is ₹8,4"), where there is no punctuation
+# to veto — only the forced word-break arm can fire. Refuse that too.
+_DANGLING_NUM = re.compile(r"(?:₹|\bRs\.?|\bINR)\s*[\d,.]*$|\d[\d,.:/-]*$|\b[A-Z]{2,5}\s?-?\s*\d*$")
+
+
+# A "." after a SHORT token is very likely an abbreviation rather than a sentence end — "Rs.",
+# "No.", "Dr.". The veto below cannot rule on it while the buffer ENDS there, because the digits
+# that would prove it ("Rs. 8,400") have not streamed in yet: at that instant the buffer is
+# exactly "…is Rs." and there is nothing after the dot to match against. So wait for two more
+# characters before judging. Deliberately narrow — an ordinary word ending a sentence ("noted.")
+# is five or more characters and splits immediately, which keeps the streaming win on the
+# one-sentence replies that are the common case here.
+_ABBREV_DOT = re.compile(r"(?:^|[\s(])(?:[A-Za-z]{1,4}|\d[\d,]*)\.$")
+
+
+def _needs_lookahead(buf: str, i: int) -> bool:
+    """True when index `i` cannot be judged yet because the deciding text hasn't arrived."""
+    return buf[i] == "." and i >= len(buf) - 2 and bool(_ABBREV_DOT.search(buf[:i + 1]))
+
+
+def _splits_a_number(buf: str, i: int) -> bool:
+    """Would splitting after index `i` land strictly inside a protected number?"""
+    lo = max(0, i - 24)
+    for m in _PROTECT.finditer(buf[lo:i + 16]):
+        if m.start() + lo < i + 1 < m.end() + lo:
+            return True
+    return False
+
+
+def _speakable(s: str) -> str:
+    """The same sanitisation gemini_turn applies to the final text, applied per clause — so what
+    is spoken early is always a PREFIX of what the turn ultimately returns. main.py relies on
+    that invariant to synthesise only the unspoken remainder; break it and the caller hears the
+    whole reply twice."""
+    s = re.sub(r"\(System[^)]*\)?", "", s or "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _tail_ok(buf: str, i: int) -> bool:
+    """May we split after index `i`? Only if what follows is a real clause, not an orphan —
+    too short to stand alone, or a bare honorific. Both produce the same audible defect."""
+    tail = buf[i + 1:]
+    return len(tail.strip()) >= _CLAUSE_TAIL_MIN and not _VOCATIVE.match(tail)
+
+
+def _next_clause(buf: str) -> tuple[str, str]:
+    """Peel one speakable clause off a growing buffer -> (clause, remainder)."""
+    if len(buf) < _CLAUSE_MIN:
+        return "", buf
+    # Never emit a half-written "(System …)" leak: gemini_turn strips those from the final text,
+    # so a partial one must not reach the speaker either.
+    sys_at = buf.rfind("(System")
+    if sys_at >= 0 and ")" not in buf[sys_at:]:
+        return "", buf
+    for i, ch in enumerate(buf):
+        if i + 1 < _CLAUSE_MIN:
+            continue
+        if ch in _CLAUSE_HARD:
+            # "2.5 लीटर" and "₹1,200" must not be mistaken for a sentence end.
+            if ch == "." and (buf[i - 1:i].isdigit() or buf[i + 1:i + 2].isdigit()):
+                continue
+            # Cannot decide yet — the text that would settle it is still streaming in. Stop
+            # scanning entirely rather than continuing: every later index is further into the
+            # unarrived tail, so there is nothing useful left to look at this pass.
+            if _needs_lookahead(buf, i):
+                return "", buf
+            if _splits_a_number(buf, i):
+                continue
+            return buf[:i + 1], buf[i + 1:]
+        if ch in _CLAUSE_SOFT and i + 1 >= _CLAUSE_SOFT_MIN and _tail_ok(buf, i) \
+                and not _splits_a_number(buf, i):
+            return buf[:i + 1], buf[i + 1:]
+    if len(buf) >= _CLAUSE_MAX:                    # no punctuation in sight — break on a word
+        cut = buf.rfind(" ", _CLAUSE_MIN, _CLAUSE_MAX)
+        if cut > 0 and _tail_ok(buf, cut) and not _splits_a_number(buf, cut) \
+                and not _DANGLING_NUM.search(buf[:cut + 1]):
+            return buf[:cut + 1], buf[cut + 1:]
+    return "", buf
+
+
+def norm_spoken(s: str) -> str:
+    """Public alias — main.py compares what was already streamed to the speaker against the
+    turn's final text so it can synthesise only the remainder."""
+    return _speakable(s)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The streaming speech guard
+# ─────────────────────────────────────────────────────────────────────────────
+# _looks_like_speech and _parse_text_function_call both inspect the COMPLETE response. Streaming
+# speaks a prefix before either can run, so both failures this project has already caught live
+# would reach the caller: ~380 words of chain-of-thought read aloud, and
+# `fn:default_api:qualify_lead{status:hot,…}` spoken verbatim.
+#
+# _FN_TEXT (below) needs the closing brace, which arrives far too late to help. This prefix form
+# fires on the OPENING instead — and is matched against the scenario's own tool names, so
+# ordinary prose containing a parenthesis can never trip it.
+_FN_TEXT_PREFIX = re.compile(
+    r"(?:^|\s)(?:print\s*\(\s*)?(?:fn[:.]\s*)?(?:default_api[:.])?([a-z_][a-z0-9_]*)\s*[\{\(]")
+# Emit nothing until this much text exists AND that prefix passes the gate. Nearly free: the
+# synthesiser's own chunk schedule does not begin generating before ~50 characters anyway, so
+# the guard sees essentially the same bytes TTS is already waiting for.
+_STREAM_PROBATION_CHARS = 60
+
+
+class _ClauseGate:
+    """Sits between the model's clauses and the speaker.
+
+    Everything it lets through is spoken; anything it rejects aborts the sink entirely rather
+    than skipping one clause. A half-spoken chain of thought is worse than a late reply, and
+    `aborted` tells the caller to fall back to the blocking synth for the whole turn.
+    """
+
+    def __init__(self, sink, allowed: dict[str, dict] | None = None):
+        self._sink = sink
+        self._allowed = allowed or {}
+        self._buf = ""
+        self._open = False        # has probation been passed?
+        self._words = 0
+        self.aborted = False
+        self.reason = ""
+
+    def _reject(self, why: str) -> None:
+        self.aborted = True
+        self.reason = why
+        print(f"[llm] stream guard aborted the spoken path ({why}): {self._buf[:90]!r}")
+
+    def _bad_shape(self, t: str) -> str:
+        """Why this text must not be spoken, or "" if it may be."""
+        if _NOT_SPEECH.search(t):
+            return "plumbing vocabulary"
+        m = _FN_TEXT_PREFIX.search(t)
+        if m and m.group(1) in self._allowed:
+            return "function call written as text"
+        symbols = sum(1 for c in t if c in _SYMBOL_CHARS)
+        if symbols > max(4, len(t) * 0.06):
+            return "symbol-heavy"
+        return ""
+
+    async def feed(self, clause: str) -> None:
+        if self.aborted:
+            return
+        self._buf = (self._buf + " " + clause).strip() if self._buf else clause
+        if not self._open:
+            # PROBATION. Judge the accumulated prefix, not the clause — a 380-word dump fails on
+            # shape within the first 60 characters, long before its length gives it away.
+            why = self._bad_shape(self._buf)
+            if why:
+                return self._reject(why)
+            if len(self._buf) < _STREAM_PROBATION_CHARS and not clause.endswith(tuple(".?!।…")):
+                return                       # not enough evidence yet — hold, do not speak
+            self._open = True
+            await self._sink(self._buf)
+            self._words = len(self._buf.split())
+            return
+        # Past probation, judge each clause on its own. NOTE the len(t) < 4 rule from
+        # _looks_like_speech is deliberately NOT applied here: it is meaningful for a whole
+        # reply and wrong for a clause — "जी," is three characters and perfectly good speech.
+        why = self._bad_shape(clause)
+        if why:
+            return self._reject(why)
+        self._words += len(clause.split())
+        if self._words > _SPEECH_WORD_CEILING:
+            return self._reject("ran past the word ceiling")
+        await self._sink(clause)
+
+
+def _parts_of(data: dict) -> list:
+    try:
+        return (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+    except Exception:
+        return []
+
+
 def _apply_identity(sid: str, tool: str, args: dict) -> None:
     """Outbound scenarios know exactly who they called, so FORCE those values rather than
     setdefault — the model sometimes fills a plausible-looking guess. Inbound scenarios do
@@ -472,9 +935,21 @@ def _apply_identity(sid: str, tool: str, args: dict) -> None:
 
 
 async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: str,
-                      lang: str = "", disclose: bool = True) -> str:
+                      lang: str = "", disclose: bool = True, on_clause=None,
+                      stream: bool = False) -> str:
     """Run one caller turn. `handlers` maps tool name → async fn(args) -> row|None.
-    Returns the agent's reply text."""
+    Returns the agent's reply text.
+
+    Two independent switches, and keeping them separate matters:
+
+    `stream` selects the SSE transport, whose benefit is TAIL protection — a stalled key becomes
+    visible at first-token instead of at the deadline. Only the WebSocket path asks for it.
+    /api/turn does not, deliberately: it is the only thing that works on serverless, it is the
+    hardest host to debug, and it should stay the most boring, most proven code path in here.
+
+    `on_clause` is an async callback receiving each complete clause as it is written, so the
+    synthesiser can start before the reply is finished. It requires `stream`, but not the other
+    way round — when the TTS socket is unavailable the WS path still wants the transport."""
     sid = scenario_of(scenario)["id"]
     lang = norm_lang(lang, sid)
     contents.append({"role": "user", "parts": [{"text": user_text}]})
@@ -484,13 +959,50 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
     # where nobody ever spoke.
     force_tool = "(System note" in (user_text or "") and "CALL " in (user_text or "")
 
+    # Every tool this scenario may call, by name -> parameter schema. The gate needs it so a
+    # function call written as prose is recognised by NAME, which is what stops ordinary text
+    # containing a parenthesis from being mistaken for one.
+    allowed_tools = {tl["name"]: tl["parameters"]["properties"]
+                     for tl in tools_for(sid) if tl["name"] in handlers}
+    gate = _ClauseGate(on_clause, allowed_tools) if on_clause else None
+    global last_stream_aborted
+    last_stream_aborted = False
+
+    def _spoken(own: str, tool: str | None) -> str:
+        """_speak_or_fallback, plus the case streaming adds.
+
+        _speak_or_fallback may REPLACE the model's line with a canned confirmation. If clauses
+        of the original were already streamed, the caller has heard the leaked prefix and is
+        about to hear the canned line as well — main.py's prefix comparison cannot reconcile
+        two different texts. Treat it as an abort so the whole reply is re-synthesised once."""
+        global last_stream_aborted
+        out = _speak_or_fallback(own, tool, lang)
+        if gate is not None:
+            if gate.aborted:
+                last_stream_aborted = True
+            elif gate._open and norm_spoken(out) != norm_spoken(
+                    _strip_text_function_call(re.sub(r"\(System[^)]*\)", "", own or ""))):
+                print("[llm] spoken text was replaced after streaming began — re-synthesising")
+                last_stream_aborted = True
+        return out
+
     for turn_i in range(5):          # allow a couple of tool round-trips
         try:
-            # Hedge only the first call of a turn — tool follow-ups are rare and racing them
-            # isn't worth doubling their quota cost.
-            data = await _generate(contents, sid, lang,
-                                   force_tool=force_tool and last_tool is None,
-                                   hedge=turn_i == 0, disclose=disclose)
+            # Selected by the CALLER, never by the module flag alone — that is what keeps
+            # /api/turn on the blocking call byte for byte no matter how STREAM_LLM is set.
+            if STREAM_LLM and stream:
+                data = await _generate_stream(contents, sid, lang,
+                                              force_tool=force_tool and last_tool is None,
+                                              on_clause=(gate.feed if (gate and turn_i == 0
+                                                                       and not gate.aborted)
+                                                         else None),
+                                              disclose=disclose)
+            else:
+                # Hedge only the first call of a turn — tool follow-ups are rare and racing them
+                # isn't worth doubling their quota cost.
+                data = await _generate(contents, sid, lang,
+                                       force_tool=force_tool and last_tool is None,
+                                       hedge=turn_i == 0, disclose=disclose)
         except Exception:
             # If a tool already saved this turn, give a graceful spoken confirmation instead
             # of surfacing a raw error (e.g. the follow-up call hits a 429).
@@ -521,9 +1033,7 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
         # "fn:default_api:qualify_lead{...}" string is spoken to the caller.
         if not fcall and text_chunks:
             joined = "".join(text_chunks)
-            allowed = {t["name"]: t["parameters"]["properties"]
-                       for t in tools_for(sid) if t["name"] in handlers}
-            tname, targs = _parse_text_function_call(joined, allowed)
+            tname, targs = _parse_text_function_call(joined, allowed_tools)
             if tname:
                 print(f"[llm] recovered a text-serialised call to {tname}")
                 fcall = {"name": tname, "args": targs}
@@ -564,11 +1074,11 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
             last_tool, last_args = name, args
             contents.append({"role": "user", "parts": [{"functionResponse": {
                 "name": name, "response": {"status": "success", "id": row.get("id")}}}]})
-            spoken = _speak_or_fallback("".join(text_chunks), name, lang)
+            spoken = _spoken("".join(text_chunks), name)
             contents.append({"role": "model", "parts": [{"text": spoken}]})
             return spoken
 
-        return _speak_or_fallback("".join(text_chunks), last_tool, lang)
+        return _spoken("".join(text_chunks), last_tool)
 
     return _reask(lang)
 

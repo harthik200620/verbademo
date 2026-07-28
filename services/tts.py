@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import base64
 import asyncio
 
@@ -20,6 +21,13 @@ import httpx
 
 from . import _http
 from .verbalize import for_speech
+
+# Guarded — same reason as in stt.py. The ElevenLabs stream-input socket needs `websockets`;
+# a build without the wheel must still boot and fall back to the HTTP paths below.
+try:
+    import websockets
+except Exception:  # pragma: no cover - import guard
+    websockets = None
 
 # Strip BOM / zero-width chars (U+FEFF, U+200B-U+200D) that dashboard bulk-pastes inject
 # and that str.strip() does NOT remove. Built via chr() so the source stays pure ASCII.
@@ -302,8 +310,19 @@ async def _sarvam(text: str, lang: str = "english") -> tuple[bytes | None, str |
 #
 # Telugu stays on the Sarvam blob path: Bulbul returns WAV and is already the faster option
 # there (eleven_v3 is the only ElevenLabs model that speaks Telugu, and it is slow).
-PCM_RATE = 22050
-_PCM_FORMAT = f"pcm_{PCM_RATE}"
+#
+# The RATE is env-driven because it has to agree with the AudioContext the browser opens. A
+# context running at 48000 resamples a 22050 buffer at ratio 2.176, and it does that
+# independently per AudioBuffer — no filter state, no fractional phase carried across — so
+# every chunk join becomes a step discontinuity. Matching the rate (or hitting an exact 2.0)
+# is what removes it; see the resampler note in static/index.html.
+_STREAM_FORMAT = _clean("ELEVENLABS_STREAM_FORMAT", "pcm_22050")
+try:
+    PCM_RATE = int(_STREAM_FORMAT.rsplit("_", 1)[-1])
+except (ValueError, IndexError):
+    PCM_RATE = 22050
+    _STREAM_FORMAT = "pcm_22050"
+_PCM_FORMAT = _STREAM_FORMAT
 
 
 def stream_capable(lang: str) -> bool:
@@ -312,6 +331,223 @@ def stream_capable(lang: str) -> bool:
         return False
     return bool(TTS_PROVIDER == "elevenlabs" and _eleven_ok and _ELEVEN_KEYS
                 and _voice_for(lng) not in _dead_voices)
+
+
+# This is the CLAUSE-FED SOCKET, not the HTTP stream above — the two are different things:
+# stream_capable() says "this language can stream at all", stream_available() says "the socket
+# that overlaps the LLM is switched on".
+STREAM_TTS = _clean("STREAM_TTS", "0").lower() not in ("0", "false", "no", "off")
+
+
+def stream_available() -> bool:
+    return bool(STREAM_TTS and websockets and _ELEVEN_KEYS)
+
+
+# The HTTP endpoint above cannot start until the whole reply text exists, then buffers the
+# entire response before returning a byte. This socket is built for the opposite: text goes in
+# clause by clause as Gemini writes it, and audio comes back while the model is still
+# generating. Crucially the HANDSHAKE is started before the LLM call, so its cost overlaps
+# Gemini's time-to-first-token instead of following it — that, not clause overlap, is where the
+# median win actually comes from on one-sentence replies.
+#
+# auto_mode is deliberately OFF: it replaces the chunk schedule with a sentence tokenizer, i.e.
+# it waits for a complete sentence before synthesising anything. A low first value in
+# chunk_length_schedule starts generation after ~50 characters instead.
+_STREAM_URL = ("wss://api.elevenlabs.io/v1/text-to-speech/{voice}/stream-input"
+               "?model_id={model}&output_format={fmt}&inactivity_timeout=20")
+_CHUNK_SCHEDULE = [50, 160, 250, 290]
+_FLUSH_AFTER_CHARS = 50
+# A clause can end mid-number even after llm.py's split veto (the model may simply stop writing
+# there). Holding a dangling tail costs at most one clause of delay; sending it means the two
+# halves get verbalised separately and the caller hears "eight rupees … four hundred".
+_TAIL_HOLD = re.compile(r"(?:₹|\bRs\.?|\bINR)\s*[\d,.]*$|\d[\d,.:/-]*$", re.IGNORECASE)
+_TAIL_HOLD_MAX = 24
+
+
+class ElevenStream:
+    """One ElevenLabs stream-input socket, alive for a single reply.
+
+    start() (non-blocking) -> feed(clause) per clause -> finish(); audio is consumed
+    concurrently via chunks(). `ok` goes False the moment anything fails, and `spoken_raw`
+    records exactly what was successfully sent — together they let the caller synthesise
+    whatever was NOT delivered through the blocking path, without repeating a line the caller
+    has already heard.
+    """
+
+    def __init__(self, lang: str = "english"):
+        self.lang = (lang or "english").lower()
+        self.ok = False
+        # TWO strings, and the distinction is load-bearing. `spoken_raw` is pre-verbalization
+        # and is the ONLY thing main.py may compare against the model's final text: if the
+        # comparison saw verbalized text ("eight thousand four hundred rupees") while the final
+        # text still said "₹8,400", startswith() would fail for every reply containing a number,
+        # main.py would treat the whole thing as unspoken, and the caller would hear the entire
+        # reply TWICE. `spoken_tts` is only for debugging what actually went over the wire.
+        self.spoken_raw = ""
+        self.spoken_tts = ""
+        self._hold = ""
+        self._flushed = False
+        self.got_audio = False
+        self.sample_rate = PCM_RATE
+        self.mime = "audio/pcm"
+        self._ws = None
+        self._opening: asyncio.Task | None = None
+        self._reader: asyncio.Task | None = None
+        self._audio: asyncio.Queue = asyncio.Queue()
+
+    def usable(self) -> bool:
+        # stream_capable() carries the Telugu rule: Telugu routes to Sarvam Bulbul, so it never
+        # gets a socket and keeps whole-text verbalization — which is also why Telugu carries
+        # none of the per-clause risk this class has to manage.
+        return bool(stream_available() and stream_capable(self.lang))
+
+    def start(self) -> None:
+        """Begin the handshake WITHOUT blocking, so it overlaps the LLM's time-to-first-token
+        rather than adding to it — by the time the first clause exists the socket is up."""
+        if self.usable() and self._opening is None:
+            self._opening = asyncio.ensure_future(self._open())
+
+    async def _open(self) -> None:
+        url = _STREAM_URL.format(voice=_voice_for(self.lang), model=_model_for(self.lang),
+                                 fmt=_PCM_FORMAT)
+        try:
+            self._ws = await asyncio.wait_for(websockets.connect(url, max_size=None), timeout=6)
+            # Auth rides in the init frame rather than a header — that sidesteps the
+            # extra_headers / additional_headers rename between websockets versions entirely.
+            await self._ws.send(json.dumps({
+                "text": " ",
+                "voice_settings": _voice_settings_for(self.lang),
+                "generation_config": {"chunk_length_schedule": _CHUNK_SCHEDULE},
+                "xi_api_key": _ELEVEN_KEYS[_eleven_key_idx] if _ELEVEN_KEYS else ELEVEN_KEY,
+            }))
+        except Exception:
+            self._ws = None
+            return
+        self._reader = asyncio.ensure_future(self._read())
+        self.ok = True
+
+    async def _read(self) -> None:
+        try:
+            async for raw in self._ws:
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                b64 = msg.get("audio")
+                if b64:
+                    self.got_audio = True
+                    await self._audio.put(base64.b64decode(b64))
+                if msg.get("isFinal"):
+                    break
+        except Exception:
+            pass
+        finally:
+            self._audio.put_nowait(None)          # sentinel — no more audio for this reply
+
+    async def _ready(self) -> None:
+        task = self._opening
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass
+            if self._opening is task:
+                self._opening = None
+
+    async def feed(self, text: str) -> None:
+        """Send one clause. Passed straight to gemini_turn(on_clause=…)."""
+        await self._ready()
+        raw = (text or "").strip()
+        if not (self.ok and self._ws and raw):
+            return
+        # Re-attach anything held back from the previous clause, then decide whether THIS one
+        # ends mid-number and must itself be held.
+        raw = (self._hold + " " + raw).strip() if self._hold else raw
+        self._hold = ""
+        m = _TAIL_HOLD.search(raw)
+        if m and m.start() > 0 and len(raw) - m.start() <= _TAIL_HOLD_MAX:
+            self._hold = raw[m.start():].strip()
+            raw = raw[:m.start()].strip()
+            if not raw:
+                self._hold = (self._hold or "") or raw
+                return
+        # Verbalize PER CLAUSE. llm.py's split veto keeps a number from being cut in half, so by
+        # here the clause holds whole numbers only and this produces the same words the
+        # whole-text pass would have.
+        t = for_speech(raw, self.lang)
+        if not t:
+            return
+        payload = {"text": t + " "}
+        # FLUSH ONLY ON A COMPLETE THOUGHT. Flushing tells ElevenLabs "that is the end of the
+        # utterance", so flushing on a clause that ended on a COMMA synthesises a fragment with
+        # continuation intonation that never resolves downward, and renders the rest as a fresh
+        # utterance — an audible gap and a rising pitch mid-sentence. On a hard terminator the
+        # fragment really IS the end of a sentence, so the latency win costs nothing prosodically.
+        hard = t.endswith(tuple(".?!।…"))
+        if not self._flushed and (hard or len(self.spoken_tts) + len(t) >= _FLUSH_AFTER_CHARS):
+            # The length arm is the safety net: a reply that opens with a long comma-spliced
+            # preamble must not sit unspoken waiting for a full stop still being written.
+            payload["flush"] = True
+            self._flushed = True
+        try:
+            await self._ws.send(json.dumps(payload))
+            self.spoken_raw = (self.spoken_raw + " " + raw).strip()
+            self.spoken_tts = (self.spoken_tts + " " + t).strip()
+        except Exception:
+            self.ok = False
+
+    async def finish(self) -> None:
+        """Close the text side and drain the audio the model is still producing."""
+        await self._ready()
+        if self._hold and self.ok and self._ws:       # release anything held back
+            held, self._hold = self._hold, ""
+            await self.feed(held)
+        if self._ws and self.ok:
+            try:
+                # Give the model a terminator if the reply has none. Without one ElevenLabs has
+                # no cue that the utterance is finished and leaves the last words hanging on a
+                # continuation contour. A bare full stop adds no audible word.
+                if self.spoken_tts and not self.spoken_tts.endswith(tuple(".?!।…")):
+                    await self._ws.send(json.dumps({"text": ". "}))
+                await self._ws.send(json.dumps({"text": ""}))
+            except Exception:
+                self.ok = False
+        if self._reader is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._reader), timeout=25)
+            except Exception:
+                self._reader.cancel()
+                self._audio.put_nowait(None)
+        else:
+            self._audio.put_nowait(None)
+        await self._shut()
+
+    async def cancel(self) -> None:
+        """Abandon this reply mid-flight (a guard tripped, or the final line diverged)."""
+        self.ok = False
+        if self._reader is not None and not self._reader.done():
+            self._reader.cancel()
+        await self._shut()
+        self._audio.put_nowait(None)
+
+    async def _shut(self) -> None:
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    async def chunks(self):
+        """Async-iterate audio as it arrives; ends when the reply completes or is cancelled."""
+        await self._ready()
+        if not self.ok:
+            return
+        while True:
+            item = await self._audio.get()
+            if item is None:
+                return
+            yield item
 
 
 async def stream_pcm(text: str, lang: str = "english"):

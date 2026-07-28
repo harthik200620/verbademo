@@ -17,7 +17,16 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Setting PYTHONIOENCODING here is too late — the interpreter already bound stdout to the
+# console codepage, which on a Windows shell is cp1252 and cannot encode a box-drawing
+# character, let alone Devanagari. Reconfigure the stream itself. Without this the harness
+# dies on its own header line before making a single model call.
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # not a TextIOWrapper (piped/captured)
+        pass
 
 from dotenv import load_dotenv  # noqa: E402
 

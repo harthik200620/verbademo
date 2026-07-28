@@ -88,6 +88,74 @@ from services.prompts import ending_line, opener_for  # noqa: E402
 eq(opener_for("lead", s["lang"]).strip()[0] in "నమ", True, "opener follows the switch")
 eq(ending_line(s["lang"]).strip()[0] in "సమ", True, "closing line follows the switch")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# What the API actually returns — the reason the tests above are not enough
+# ─────────────────────────────────────────────────────────────────────────────
+# Everything above feeds _maybe_switch_language a language code and a confidence. MEASURED
+# against the live endpoint on 2026-07-28, Sarvam gives us NEITHER:
+#
+#   POST /speech-to-text  model=saaras:v3  mode=codemix  language_code=en-IN
+#   (the audio was unambiguously Hindi)
+#   -> {"transcript": "मुझे सोमवार सुबह appointment चाहिए", "language_code": "en-IN"}
+#
+# No language_probability field at all, so conf is always 0.0 and the >= 0.80 gate rejects
+# every turn; and language_code is an echo of the request bias, so it names the language we
+# already assumed. The feature passed its unit tests and had never once fired in production.
+#
+# The transcript's SCRIPT is the signal that actually exists. These tests run through
+# _detect_language with the real shape of the response — code="en-IN", conf=0.0 — so a
+# regression to trusting the response fields fails here rather than silently on a call.
+det = main._detect_language
+
+eq(det("मुझे अपॉइंटमेंट चाहिए", "en-IN", 0.0), ("hindi", 1.0),
+   "devanagari overrides a mis-echoed en-IN")
+eq(det("నాకు అపాయింట్‌మెంట్ కావాలి", "en-IN", 0.0), ("telugu", 1.0),
+   "telugu script overrides a mis-echoed en-IN")
+eq(det("Google Ads के लिए बजट", "en-IN", 0.0), ("hindi", 1.0), "code-mixed reads as hindi")
+eq(det("I want to book an appointment", "en-IN", 0.0), ("", 0.0),
+   "latin + no real confidence yields nothing — never a guess")
+eq(det("mujhe appointment chahiye", "hi-IN", 0.0), ("", 0.0),
+   "romanised hindi is honestly undetectable here; staying put is the safe failure")
+eq(det("", "hi-IN", 0.0), ("", 0.0), "empty transcript detects nothing")
+
+# If Sarvam ever starts populating the fields, use them — but only when they carry real
+# information. A 0.0 confidence is the absence of an answer, not a low-confidence answer.
+eq(det("mujhe appointment chahiye", "hi-IN", 0.93), ("hindi", 0.93),
+   "a genuine probability is honoured for romanised speech")
+eq(det("some latin text", "hi-IN", 0.0), ("", 0.0), "a zero probability is not a weak signal")
+
+# ── script evidence still goes through the streak gate ───────────────────────
+# The easiest thing to lose when wiring in a second, "obviously certain" input is the
+# sustained requirement. One Hindi sentence inside an English call must not flip the session.
+s = fresh("english")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "मुझे अपॉइंटमेंट चाहिए"), None,
+   "one script-proven hindi turn does not switch")
+eq(s["lang"], "english", "still english after one")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "हाँ बिल्कुल"), "hindi",
+   "two in a row switches")
+eq(s["lang"], "hindi", "session language followed the caller")
+
+# An English turn in between resets the streak, exactly as a code-driven one does.
+s = fresh("english")
+main._maybe_switch_language(s, "en-IN", 0.0, "मुझे चाहिए")
+main._maybe_switch_language(s, "en-IN", 0.0, "no thanks I am fine")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "मुझे चाहिए"), None,
+   "an english turn in between restarts the streak")
+eq(s["lang"], "english", "still english")
+
+# Hindi then Telugu is a wavering detector, not a switch.
+s = fresh("english")
+main._maybe_switch_language(s, "en-IN", 0.0, "मुझे चाहिए")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "నాకు కావాలి"), None,
+   "hindi then telugu does not switch")
+eq(s["lang"], "english", "a wavering detector leaves the language alone")
+
+# Already-in-that-language stays a no-op on the script path too.
+s = fresh("hindi")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "मुझे चाहिए"), None, "hindi in a hindi call")
+eq(main._maybe_switch_language(s, "en-IN", 0.0, "हाँ जी"), None, "…and stays a no-op")
+eq(s["lang"], "hindi", "unchanged")
+
 if FAILS:
     print(f"\n{len(FAILS)} FAILED\n")
     for f in FAILS:

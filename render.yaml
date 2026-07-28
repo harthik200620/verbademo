@@ -1,0 +1,37 @@
+# Render blueprint — the host where the streaming path actually works.
+#
+# Vercel stays live on the HTTP fallback (see vercel.json) because it is the stable shareable
+# link, but serverless cannot hold a WebSocket: there the mic uploads as one blob, the reply
+# synthesises as one blob, and every streaming optimisation in this repo is inert. Render keeps
+# a process alive, so /ws works and the demo runs at the latency it was built for.
+#
+# Region: Singapore is Render's closest to India. Fly.io in bom1 would save another 30-50ms on
+# the browser<->server leg, at the cost of flyctl and a Dockerfile instead of git-push.
+services:
+  - type: web
+    name: verba-allinone
+    runtime: python
+    region: singapore
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    # One worker on purpose. Conversation state lives in memory per WebSocket (services are
+    # module-level singletons: the Gemini key cooldown map, the ElevenLabs probe result, the
+    # opener and ack caches). A second worker would hold its own copy of all of it and answer
+    # half the requests from a cold one.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /config
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # Everything else — the 104 Gemini keys, Sarvam, ElevenLabs and the streaming flags —
+      # comes from the dashboard. Render's env editor takes a bulk .env paste, so it is one
+      # operation rather than 129. They are deliberately NOT listed here: this file is
+      # committed to a public repo.
+      #
+      # The flags below MUST be on for this host to be worth using, so they are called out
+      # rather than left to whatever the pasted .env happened to contain:
+      #   STREAM_STT=1   transcribe while the caller is still speaking
+      #   STREAM_LLM=1   SSE transport (tail protection)
+      #   STREAM_TTS=1   clause-fed socket, handshake overlapping the LLM
+      #   ACK_CLIPS=1    backchannel that covers Gemini's fixed time-to-first-token

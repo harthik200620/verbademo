@@ -29,7 +29,7 @@
   --sh-md:0 18px 44px rgba(10,25,80,.10), 0 3px 10px rgba(10,25,80,.04);
   --sh-lg:0 40px 90px rgba(8,20,70,.16), 0 10px 26px rgba(8,20,70,.07);
   --r-lg:22px; --r-md:15px; --r-sm:10px;
-  --amp:0;
+  --amp:0; --thr:0; --hot:0;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -130,6 +130,21 @@ header .sub{font-size:11.8px;color:var(--muted);margin-top:2px}
   box-shadow:0 0 0 4px rgba(15,123,79,.14)}
 .dot.busy{background:var(--azure);animation:pulse 1.15s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
+/* Level meter with the DECISION LINE drawn on it. A bare level bar shows that the mic works;
+   it does not show whether the caller is clearing the bar the VAD actually uses. When "it
+   isn't taking my voice" happens, this splits the two cases apart at a glance: either the fill
+   never reaches the marker (mic too quiet / threshold too high) or it does and the problem is
+   downstream. */
+.vu{position:relative;width:86px;height:6px;border-radius:3px;background:var(--line);
+  overflow:hidden;flex:none}
+.vu i,.vu u{position:absolute;inset:0 auto 0 0;width:calc(var(--amp) * 100%);border-radius:3px;
+  transition:width .06s linear}
+.vu i{background:var(--muted2)}
+/* --hot is set from the SAME comparison the VAD makes, so the colour flip is the decision
+   itself rather than a visual approximation of it. */
+.vu u{background:var(--green);opacity:var(--hot)}
+.vu b{position:absolute;top:-2px;bottom:-2px;width:2px;border-radius:1px;
+  left:calc(var(--thr) * 100%);background:var(--azure);opacity:.85}
 
 .grid{display:grid;grid-template-columns:1fr 372px;gap:15px;flex:1;min-height:0}
 .panel{border-radius:var(--r-lg);background:var(--glass);
@@ -376,11 +391,13 @@ footer a{color:var(--brand);text-decoration:none}
       <span class="status"><span class="dot" id="statdot"></span><span id="statustext">Not connected</span></span>
     </div>
     <div class="opts">
-      <label>Mic sensitivity
+      <label title="Trims the automatic threshold up or down by about an octave. The blue line on the meter is the level your voice has to clear.">Mic sensitivity
         <input type="range" id="sens" min="0.006" max="0.04" step="0.002" value="0.016" />
+        <span class="vu" aria-hidden="true"><i></i><u></u><b></b></span>
         <span id="sensval" style="min-width:62px">normal</span>
       </label>
       <label><input type="checkbox" id="discl" checked /> Say it's an AI up front</label>
+      <label title="Headphones, or a phone held to your ear: lets you cut in while the agent is talking. Leave OFF on speakerphone — the agent would hear its own voice and interrupt itself."><input type="checkbox" id="bargeToggle" /> 🎧 Interrupt mode</label>
     </div>
     <div class="typer">
       <input id="typebox" placeholder="…or type instead of speaking" aria-label="Type to the agent" />
@@ -512,12 +529,25 @@ async function choose(s, lang){
   $('typebox').placeholder = s.chat ? 'Type like you would on WhatsApp…' : '…or type instead of speaking';
   $('hint').innerHTML = s.chat
     ? 'Type short, lowercase, with typos if you like — it is built for that.'
-    : 'Press <b>'+esc($('btnStart').textContent)+'</b>, then just talk. You can interrupt it mid-sentence.';
+    : 'Press <b>'+esc($('btnStart').textContent)+'</b>, then just talk. '
+      + (bargeOn ? 'Interrupt mode is on — you can talk over it.'
+                 : 'Tick <b>Interrupt mode</b> below if you want to cut in mid-sentence.');
   renderBrief(); renderGoals({}); renderLab();
   if(recog){ try{ recog.lang=langCode(); }catch(e){} }
   await Promise.all([loadNotes(), init()]);
-  getOpening();                      // warm the first line while they read the brief
-  ensureWS();
+  warmUp();
+}
+
+/* Pay the connection costs while the caller is still reading the scenario card. The WebSocket
+   handshake (TCP + TLS + upgrade) and the AudioWorklet module fetch both used to land on the
+   Start click, where they are pure dead air — 250ms to 1s of it — in front of an opening line
+   that never needed either. */
+function warmUp(){
+  try{ ensureWS(); }catch(e){}
+  try{ fetch('/static/pcm-worklet.js',{cache:'force-cache'}).catch(()=>{}); }catch(e){}
+  // Acks AFTER the opener, never alongside it: the ElevenLabs free tier allows 2 concurrent
+  // synths, and stacking five requests at pickup is how you turn a warm-up into a 429 storm.
+  try{ getOpening().then(loadAcks).catch(()=>{}); }catch(e){}
 }
 
 function renderBrief(){
@@ -608,6 +638,9 @@ async function init(){
   // Browser STT only when the server SAYS so — it silently hears nothing on many phones,
   // so one flaky /config request must not downgrade the whole call.
   if(!CONFIG) CONFIG={stt:'sarvam',tts:'elevenlabs',llm_ok:true};
+  // The AudioContext must open at the rate the server is actually sending, or the browser
+  // resamples every buffer independently and the joins click. The server is the authority.
+  if(CONFIG.pcm_rate) PCM_RATE_HINT=CONFIG.pcm_rate;
   $('footcfg').textContent =
     (CONFIG.stt==='sarvam'?'Sarvam speech':'browser speech')+' · '+
     (CONFIG.tts||'—')+' voice · '+(CONFIG.model||'')+' · '+(CONFIG.llm_keys||0)+' keys';
@@ -783,6 +816,43 @@ function connectWS(){
   });
 }
 function wsSend(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+/* ── Instant acknowledgement ──────────────────────────────────────────────
+   ~1.25s of every reply is Gemini's fixed time-to-first-token — measured on this key pool and
+   immovable at this quality tier, because a one-word reply costs exactly as long as a full
+   sentence. So cover it rather than pretend it isn't there: a short pre-cached "Mm-hmm…" lands
+   260ms after the caller stops speaking, the way a person hums while they think. Cancelled the
+   moment the real reply starts and never repeated back to back, so it stays a backchannel
+   rather than becoming a tic. */
+const ACK_DELAY_MS=260;
+let ackClips=[], ackTimer=null, ackLast=-1, ackAudio=null;
+async function loadAcks(){
+  try{
+    const fd=new FormData();
+    fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
+    const j=await (await fetch('/api/acks',{method:'POST',body:fd})).json();
+    ackClips=(j.acks||[]).filter(a=>a.audio_b64)
+                         .map(a=>URL.createObjectURL(b64toBlob(a.audio_b64,a.mime)));
+  }catch(e){ ackClips=[]; }
+}
+function scheduleFiller(){
+  clearFiller();
+  if(!ackClips.length) return;
+  ackTimer=setTimeout(()=>{
+    ackTimer=null;
+    // Skip entirely when the turn was already fast — there is nothing left to cover, and an ack
+    // that lands on top of the real reply is worse than no ack at all.
+    if(playing || !waitingForServer || !listening || endingCall) return;
+    let i=Math.floor(Math.random()*ackClips.length);
+    if(ackClips.length>1 && i===ackLast) i=(i+1)%ackClips.length;
+    ackLast=i;
+    try{ ackAudio=new Audio(ackClips[i]); ackAudio.play().catch(()=>{}); }catch(e){}
+  },ACK_DELAY_MS);
+}
+function clearFiller(){
+  if(ackTimer){ clearTimeout(ackTimer); ackTimer=null; }
+  if(ackAudio){ try{ ackAudio.pause(); }catch(e){} ackAudio=null; }
+}
 async function ensureWS(){
   if(httpMode) return false;
   if(ws&&ws.readyState===1) return true;
@@ -807,6 +877,10 @@ function onWsMessage(ev){
     case 'tts_audio_meta': pendingAudioMime=m.mime; break;
     case 'tts_stream_start': startPcm(m.rate); break;
     case 'tts_stream_end': endPcm(); break;
+    // The server's speech guard rejected what it had begun streaming. Anything still sitting
+    // in the prebuffer has NOT been heard yet, so discarding now means the caller hears the
+    // leak not at all rather than half of it — which is the whole reason the prebuffer exists.
+    case 'tts_abort': stopPcm(); playing=false; break;
     case 'crm_created': onCrm(m.crm); break;
     case 'goal_progress': renderGoals(m.goal||{}); break;
     case 'turn_metrics': onMetrics(m); break;
@@ -956,6 +1030,10 @@ $('typebox').addEventListener('keydown',e=>{ if(e.key==='Enter') sendTyped(); })
 $('typebox').addEventListener('input',()=>{ if(isChat()&&turnsSent>0) armNoReply(); });
 $('sens').addEventListener('input',e=>{
   const v=parseFloat(e.target.value);
+  // Cached here so onPcm never reads the DOM — it runs ~375 times a second and a layout-forcing
+  // read in that loop is pure waste. The slider is now a TRIM on a derived threshold rather
+  // than the threshold itself, so its range maps to +/- 1 octave (see `trim` in onPcm).
+  sensVal=v;
   $('sensval').textContent = v<0.012?'sensitive':(v>0.026?'quiet room':'normal');
 });
 $('discl').addEventListener('change',e=>{
@@ -1035,13 +1113,107 @@ async function sendTyped(){
                  disclose:disclose}); }
 }
 
-/* ── Mic capture: AudioWorklet + energy VAD ─────────────────────────────── */
-let capturing=false, speechFrames=[], preRoll=[], silentSamples=0, speechSamples=0,
-    voicedSamples=0, srate=48000;
-/* SILENCE_END 420: a natural mid-sentence pause in Hindi was being cut as end-of-turn at 350.
-   MIN_SPEECH 180: real one-word answers ("हाँ", "yes") were discarded as non-speech at 300. */
-const PREROLL_MS=300, SILENCE_END_MS=420, MIN_SPEECH_MS=180, MAX_TURN_MS=15000;
-const MIN_COMPLETE_MS=700, FRAGMENT_WAIT_MS=1100;
+/* ── Mic capture: AudioWorklet + adaptive energy VAD ────────────────────── */
+let capturing=false, speechFrames=[], preRoll=[], speechSamples=0, srate=48000;
+let nfBucket=Infinity, nfPrev=Infinity, nfBucketStart=0;   // sliding-minimum noise floor
+let onsetRun=0, silentRun=0, recentVoiced=0, framesSinceVoiced=0, rvDecay=0.998;
+let sigPeak=0, turnPeak=0, peakDecay=0.9999, turnPeakDecay=0.9995;
+let deafSince=0, deafNoted=false, lastVoiceAt=0, micFrames=0;
+/* Seeded from the DOM rather than a literal so a browser that restores a changed slider value
+   on reload does not leave the cached copy stale until the caller happens to touch it. Cached
+   because onPcm runs ~375 times a second and must never read the DOM. */
+let sensVal=parseFloat(($('sens')||{}).value)||0.016, fillerGrace=false;
+/* ── Interrupt (barge-in) mode ──────────────────────────────────────────────
+   OFF by default, and for a measured reason rather than caution: on a speakerphone the mic
+   hears the agent's own voice, so the agent cuts ITSELF off mid-sentence — echo cancellation
+   plus a sustain requirement was still not enough to stop it. On headphones, or a phone held
+   to the ear, it works. The 350ms sustain is kept regardless, so a cough, a door or one loud
+   syllable can never stop a reply.
+   Until this shipped the UI promised "you can interrupt it mid-sentence" and onPcm returned
+   early whenever `playing` was true — the mic was completely deaf while the agent spoke. */
+let bargeOn=false, bargeVoiced=0;
+const BARGE_SUSTAIN_MS=350;
+try{ bargeOn = localStorage.getItem('verba_barge')==='1'; }catch(e){}
+if($('bargeToggle')){
+  $('bargeToggle').checked = bargeOn;
+  $('bargeToggle').addEventListener('change', e=>{
+    bargeOn = !!e.target.checked; bargeVoiced=0;
+    try{ localStorage.setItem('verba_barge', bargeOn?'1':'0'); }catch(e){}
+    sysNote(bargeOn ? '🎧 Interrupt mode on — you can talk over the agent. Use headphones.'
+                    : 'Interrupt mode off — the agent will finish its sentence.');
+  });
+}
+
+/* The meter shows the LINE the caller has to clear, not just their level — when "it isn't
+   taking my voice" happens, that turns an invisible failure into a visible one: either the bar
+   never reaches the marker (mic too quiet / threshold too high) or it does and the problem is
+   downstream. Batched into one rAF so onPcm never touches layout ~375 times a second. */
+let _ampVal=0, _thrVal=0, _ampRaf=0;
+function setAmp(v){
+  _ampVal=v;
+  if(_ampRaf) return;
+  _ampRaf=requestAnimationFrame(()=>{ _ampRaf=0;
+    const d=document.documentElement.style;
+    d.setProperty('--amp',_ampVal.toFixed(3));
+    d.setProperty('--thr',_thrVal.toFixed(3));
+    d.setProperty('--hot',_ampVal>=_thrVal?1:0); });
+}
+
+/* MIN_SPEECH 180: real one-word answers ("हाँ", "yes") were discarded as non-speech at 300.
+   SILENCE_END 300 replaces 420 — the old value was compensating for a FIXED threshold that
+   read a mid-sentence breath as speech. With the tolerant accumulator below, voice erodes the
+   silence run instead of zeroing it, so the hold no longer has to be padded for it.
+   MIN_COMPLETE is measured against RECENT voice (recentVoiced), not a cumulative total: as a
+   cumulative counter it cleared after the first syllable and FRAGMENT_WAIT became dead code.
+   THINKING_WAIT applies only past LONG_TURN_MS, because that is where recall pauses live — a
+   price, a date, a name — and being cut off mid-number is far worse than +200ms. */
+const PREROLL_MS=300, SILENCE_END_MS=300, MIN_SPEECH_MS=180, MAX_TURN_MS=9000;
+const MIN_COMPLETE_MS=250, FRAGMENT_WAIT_MS=600;
+const LONG_TURN_MS=2500, THINKING_WAIT_MS=480;
+/* Applied for ONE turn after the caller only managed a filler. Deliberately generous: someone
+   who has just audibly hesitated is mid-sentence, and cutting in on them twice running is the
+   exact thing that makes an agent feel impatient. */
+const FILLER_WAIT_MS=900;
+/* Noise-floor window and clamps. NF_MIN is a FLOOR ON THE FLOOR and every threshold derives
+   from the floor, so setting it too high silently inflates the whole ladder above a quiet
+   caller's voice; 0.0004 lets a quiet room actually read as quiet. NF_MAX stops a loud shop
+   from pushing onset beyond any speaker's reach — a false capture is recoverable
+   (MIN_SPEECH_MS discards it), deafness is not. */
+const NF_WINDOW_MS=1000, NF_MIN=0.0004, NF_MAX=0.02;
+/* SIL_K covers the gap between a sliding MINIMUM and a room's MEAN. Measured upstream: room
+   mean 0.00215 against nf 0.00085, a factor of 2.5 — so a naive +5dB allowance lands UNDER the
+   room and no frame ever counts as silence, which hangs the turn until MAX_TURN_MS. 3.5 covers
+   the min->mean gap plus frame-to-frame fluctuation. */
+const SIL_K=3.5, SIL_ABS_MIN=0.0025, START_K=4.0, START_MAX=0.09;
+const HYST_FRAC=0.45, CONTINUE_FRAC=0.70;
+const ONSET_SUSTAIN_MS=60, SIL_FORGIVE=3.0, NEUTRAL_AS_SILENCE_MS=900, RV_TAU_MS=1200;
+/* SIGNAL-RELATIVE thresholds — the part that makes two failure modes structurally impossible
+   rather than merely unlikely.
+
+   The old code used a fixed absolute onset threshold from a slider (default 0.016). On a laptop
+   mic, a far-field speaker, or any device where the browser hands us a low-gain stream, ordinary
+   speech peaks at 0.003-0.008 — under that value the onset test NEVER fires and the agent is
+   100% deaf with nothing on screen to say so. No amount of tuning a floor-relative term fixes
+   it, because the absolute floor wins. So the absolute floor drops below any real signal
+   (ONSET_ABS_MIN) and onset is additionally CAPPED at a fraction of the loudest thing this mic
+   has actually produced (PEAK_ONSET * sigPeak), never below +6dB over the room.
+
+   Silence is the mirror. A floor-derived silence threshold is only as good as the floor
+   estimate, which is the most fragile number here. PEAK_SIL adds a SECOND, INDEPENDENT
+   estimator needing no floor at all: silence is anything ~17dB below the caller's OWN voice
+   this turn. Taking the max means either one alone can end the turn, and it is gain-invariant,
+   which is what makes it immune to an AGC ramp during the very pause we are detecting. */
+const ONSET_ABS_MIN=0.0018, PEAK_ONSET=0.35, PEAK_SIL=0.14, ONSET_FLOOR_K=2.0;
+const PEAK_SIL_ABS=0.10, SIL_HARD_MIN=0.0004;
+/* ~1.3s attack for sigPeak. Slow ON PURPOSE: with an instant attack it reacted to a level STEP
+   — a noise bed starting, an AC cutting in — a full noise-floor window before the floor tracker
+   could follow, and for that window the quiet-mic rescue saw "loud signal, low floor" and
+   dropped onset under the new ambient, so the step itself started a junk turn. */
+const PEAK_ATTACK=0.002, PEAK_TAU_MS=6000, TURN_PEAK_TAU_MS=2500;
+/* Hard, accumulator-independent backstop: this much wall-clock with nothing above voiceT ends
+   the turn whatever the silence accumulator believes. */
+const HARD_QUIET_MS=900;
+const VAD_DEBUG=/[?&]vad=1/.test(location.search);
 
 async function startMic(){
   try{
@@ -1060,7 +1232,29 @@ async function startMic(){
   workletNode=new AudioWorkletNode(audioCtx,'pcm-processor');
   workletNode.port.onmessage=e=>onPcm(e.data);
   sourceNode.connect(workletNode); workletNode.connect(audioCtx.destination);
-  capturing=false; speechFrames=[]; preRoll=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+  // Watchdog: if not a single audio frame arrives the mic is dead. Try once to resume, then SAY
+  // so — a silently dead mic is the worst failure in a live demo, because nothing on screen
+  // distinguishes it from the agent ignoring you.
+  micFrames=0;
+  setTimeout(async ()=>{
+    if(micFrames || !listening) return;
+    try{ await audioCtx.resume(); }catch(e){}
+    setTimeout(()=>{
+      if(micFrames || !listening) return;
+      sysNote('🎤 No sound is reaching the mic. Tap the page once, check this site\'s microphone '
+            + 'permission, then press Stop and Start again — or just type below.');
+    },1800);
+  },1800);
+  capturing=false; speechFrames=[]; preRoll=[]; speechSamples=0;
+  // Re-acquire the room from scratch on every call, and derive the decays from the ACTUAL frame
+  // size now that srate is known (the worklet emits 128-sample render quanta).
+  nfBucket=Infinity; nfPrev=Infinity; nfBucketStart=performance.now();
+  onsetRun=0; silentRun=0; recentVoiced=0; framesSinceVoiced=0;
+  sigPeak=0; turnPeak=0; deafSince=0; deafNoted=false; lastVoiceAt=performance.now();
+  const frameMs=128/srate*1000;
+  rvDecay=Math.exp(-frameMs/RV_TAU_MS);
+  peakDecay=Math.exp(-frameMs/PEAK_TAU_MS);
+  turnPeakDecay=Math.exp(-frameMs/TURN_PEAK_TAU_MS);
 }
 function stopMic(){
   try{ if(workletNode){ workletNode.port.onmessage=null; workletNode.disconnect(); } }catch(e){}
@@ -1076,33 +1270,148 @@ function onPcm(chunk){
   // Keep the pre-roll ring FILLING whenever the mic is open and the agent isn't speaking —
   // including the post-playback mute window. Returning early on !armed() made that window a
   // dead zone, so a caller who answered the instant the agent finished lost their first word.
-  if(playing || !listening) return;
+  micFrames++;                                   // proof of life for the startMic watchdog
+  if(!listening) return;
+  if(playing){
+    if(!bargeOn) return;
+    // Only SUSTAINED speech over the agent's line counts, so a cough, a door slam or a single
+    // loud syllable cannot stop it. Measured against the caller's own onset threshold rather
+    // than a fixed level, so it follows the same adaptive ladder as everything else.
+    const bn=chunk.length; let bs=0; for(let i=0;i<bn;i++){ const v=chunk[i]; bs+=v*v; }
+    if(Math.sqrt(bs/bn) > Math.max(sensVal, _thrVal*0.05)){ bargeVoiced += bn; }
+    else { bargeVoiced = 0; }
+    if(bargeVoiced < srate*BARGE_SUSTAIN_MS/1000) return;
+    bargeVoiced=0;
+    clearAudioQueue();                 // cut the agent off mid-sentence
+    dropAudioUntilIdle=true;           // and ignore the rest of that reply as it arrives
+    waitingForServer=false; muteUntil=0;
+    sysNote('🎧 Go ahead —');
+    // fall through: this frame begins the caller's turn
+  }
   const n=chunk.length;
   let sum=0; for(let i=0;i<n;i++){ const s=chunk[i]; sum+=s*s; }
   const rms=Math.sqrt(sum/n);
-  document.documentElement.style.setProperty('--amp',Math.min(1,rms/0.05).toFixed(3));
-  const startT=parseFloat($('sens').value), silT=startT*0.6, preMax=srate*PREROLL_MS/1000;
+  setAmp(Math.min(1,rms/0.05));
+
+  // ── NOISE FLOOR: two-bucket sliding MINIMUM ───────────────────────────────
+  // A one-pole tracker collapses toward ZERO instead of settling on the room level, which pins
+  // every derived threshold at its minimum — below almost any real room. Silence then never
+  // accumulates and the turn only ends at MAX_TURN_MS: the agent appears deaf. A true minimum
+  // cannot be dragged up by the caller's own voice, so unlike a mean tracker it is safe to run
+  // DURING capture — which is what lets it follow a phone's auto-gain raising the room level
+  // during the very pause we are trying to detect.
+  const nowMs=performance.now();
+  if(nowMs-nfBucketStart>=NF_WINDOW_MS/2){ nfPrev=nfBucket; nfBucket=Infinity; nfBucketStart=nowMs; }
+  if(rms<nfBucket) nfBucket=rms;
+  const nf=Math.min(NF_MAX,Math.max(NF_MIN,Math.min(nfBucket,nfPrev)));
+
+  // ── SIGNAL PEAKS: the second, floor-independent estimator ─────────────────
+  // sigPeak answers "how loud does this microphone actually get?" and is the only thing that can
+  // rescue a low-gain capture chain. turnPeak answers "how loud is THIS caller right now?" and
+  // is the only end-of-turn reference that survives a wrong noise floor and an AGC ramp at once.
+  sigPeak = rms>sigPeak ? sigPeak+(rms-sigPeak)*PEAK_ATTACK : sigPeak*peakDecay;
+  // turnPeak keeps an instant attack deliberately: it only ever RAISES silT, i.e. only ever ends
+  // turns sooner, so reacting immediately to the caller's real level is purely safe.
+  if(capturing) turnPeak=Math.max(rms,turnPeak*turnPeakDecay);
+
+  // ── THREE THRESHOLDS, derived floor-first then signal-corrected ───────────
+  const trim=Math.max(0.5,Math.min(2.0,sensVal/0.016));    // slider = +/- 1 octave of trim
+  // turnPeak only counts WHILE capturing: left in, a loud turn keeps silT (and through the
+  // hysteresis rule, onsetT) raised into the next turn and makes a quiet follow-up answer
+  // unhearable — trading one deafness bug for another.
+  const silAbs=Math.min(SIL_ABS_MIN,Math.max(SIL_HARD_MIN,sigPeak*PEAK_SIL_ABS));
+  const silT=Math.max(nf*SIL_K,silAbs,capturing?turnPeak*PEAK_SIL:0);
+  let onsetT=Math.max(ONSET_ABS_MIN,Math.min(START_MAX,nf*START_K*trim));
+  // QUIET-MIC RESCUE. Pull onset down to meet a genuinely low-level capture chain, but never
+  // below +6dB over the room — so this can only restore hearing, never turn room noise into
+  // speech. On a normal mic sigPeak*PEAK_ONSET sits far above onsetT and this line is a no-op.
+  onsetT=Math.max(nf*ONSET_FLOOR_K,Math.min(onsetT,sigPeak*PEAK_ONSET));
+  onsetT=Math.max(onsetT,silT/HYST_FRAC);                  // hysteresis is non-negotiable
+  const voiceT=onsetT*CONTINUE_FRAC;
+  if(rms>voiceT) lastVoiceAt=nowMs;              // generous: a quiet talker is still present
+  _thrVal=Math.min(1,onsetT/0.05);               // show the bar the caller has to clear
+  if(VAD_DEBUG) window.__vad={rms,nf,silT,onsetT,voiceT,sigPeak,turnPeak,capturing,
+                              armed:armed(),silentMs:silentRun/srate*1000,
+                              quietMs:nowMs-lastVoiceAt};
+  const preMax=srate*PREROLL_MS/1000;
 
   if(!capturing){
     preRoll.push(chunk);
     let total=preRoll.reduce((a,c)=>a+c.length,0);
     while(total>preMax&&preRoll.length>1){ total-=preRoll.shift().length; }
-    if(armed()&&rms>startT){
+    // Onset needs SUSTAIN, not one 2.7ms frame — a door slam or a keyboard tap used to start a
+    // junk turn, and the caller's real speech was then discarded while it was in flight. Free,
+    // because capture seeds from the 300ms pre-roll ring: nothing said is lost.
+    if(rms>onsetT) onsetRun+=n; else onsetRun=Math.max(0,onsetRun-n);
+    // DEAFNESS WATCHDOG. If the mic has been armed and quiet for a long stretch while sigPeak
+    // says there IS sound well above the room, the thresholds are wrong for this device and the
+    // caller is talking to a wall with nothing on screen to explain it. Say so, and nudge the
+    // trim — a failure this specific must at minimum announce itself.
+    if(armed()){
+      if(!deafSince) deafSince=nowMs;
+      if(!deafNoted && nowMs-deafSince>9000 && sigPeak>nf*2.5){
+        deafNoted=true;
+        const s=$('sens');
+        if(s && parseFloat(s.value)>parseFloat(s.min)){
+          s.value=Math.max(parseFloat(s.min),parseFloat(s.value)-0.006).toFixed(3);
+          s.dispatchEvent(new Event('input'));
+        }
+        sysNote('🎤 I can hear sound but I\'m not registering it as speech — I\'ve turned '
+              + 'sensitivity up. If it still doesn\'t pick you up, move closer to the mic or '
+              + 'drag the sensitivity slider left.');
+      }
+    }else{ deafSince=0; }
+    if(armed() && onsetRun>=srate*ONSET_SUSTAIN_MS/1000){
       capturing=true; speechFrames=preRoll.slice(); preRoll=[];
       speechSamples=speechFrames.reduce((a,c)=>a+c.length,0);
-      silentSamples=0; voicedSamples=0; clearNoReply();
+      silentRun=0; recentVoiced=0; framesSinceVoiced=0; onsetRun=0;
+      turnPeak=rms; deafSince=0;                 // this turn's loudness reference starts here
+      clearNoReply();
       micStreamOpen = STREAM_MIC && !httpMode && ws && ws.readyState===1;
-      if(micStreamOpen){ wsSend({type:'mic_start',sample_rate:16000}); streamSent=0; }
+      // `lang` is not decoration: the server opens the Sarvam STT socket on this message and
+      // the language is a connect-time URL parameter, so omitting it biases recognition wrong
+      // for the whole turn — and there is no second chance, the socket is already up.
+      if(micStreamOpen){ wsSend({type:'mic_start',sample_rate:16000,lang:sessionLang}); streamSent=0; }
     }
   }else{
     speechFrames.push(chunk); speechSamples+=n;
     if(micStreamOpen) pumpMicStream(false);
-    if(rms<silT) silentSamples+=n; else { silentSamples=0; voicedSamples+=n; }
-    const voicedMs=voicedSamples/srate*1000;
-    // A complete phrase ends fast; a fragment gets longer to finish. This is what stops the
-    // agent cutting people off mid-thought without making every turn feel sluggish.
-    const endPauseMs=(voicedMs>=MIN_COMPLETE_MS)?SILENCE_END_MS:FRAGMENT_WAIT_MS;
-    if(silentSamples>=srate*endPauseMs/1000 || speechSamples>=srate*MAX_TURN_MS/1000) endTurn();
+    // TOLERANT silence. Voice ERODES the run instead of zeroing it: one AGC-boosted breath 340ms
+    // into a 350ms pause used to wipe the whole thing and the turn never ended. Erasing a full
+    // run now costs about a syllable of continuous speech, while a stray click costs 3x its own
+    // length. Frames in the neutral band are evidence for neither — but after
+    // NEUTRAL_AS_SILENCE_MS they count as silence, which bounds the worst case at ~1.25s.
+    if(rms>=voiceT){
+      silentRun=Math.max(0,silentRun-n*SIL_FORGIVE); recentVoiced+=n; framesSinceVoiced=0;
+    }else if(rms<silT){
+      silentRun+=n; framesSinceVoiced++;
+    }else{
+      framesSinceVoiced++;
+      if(framesSinceVoiced*(n/srate*1000)>NEUTRAL_AS_SILENCE_MS) silentRun+=n;
+    }
+    recentVoiced*=rvDecay;                       // "how much voice in the last ~1.2s"
+    const recentMs=recentVoiced/srate*1000, turnMs=speechSamples/srate*1000;
+    let endPauseMs=SILENCE_END_MS;
+    if(recentMs<MIN_COMPLETE_MS && turnMs<1200) endPauseMs=FRAGMENT_WAIT_MS;
+    else if(turnMs>=LONG_TURN_MS)               endPauseMs=THINKING_WAIT_MS;
+    // The previous turn was a hesitation, so the caller is mid-thought: give them room to reach
+    // the rest of it instead of cutting in the moment they pause a second time.
+    if(fillerGrace) endPauseMs=Math.max(endPauseMs,FILLER_WAIT_MS);
+    const silenceEnd=srate*endPauseMs/1000, maxS=srate*MAX_TURN_MS/1000;
+    // THREE independent ways for a turn to end, because relying on one has failed before:
+    //  1. the tolerant silence accumulator (the good path, ~300ms after the caller stops);
+    //  2. a hard quiet timer — nothing above voiceT for HARD_QUIET_MS — which needs no
+    //     accumulator, no forgiveness arithmetic and no correct noise floor, only the caller's
+    //     own peak. This is the one that cannot be defeated;
+    //  3. MAX_TURN_MS, purely as evidence that 1 and 2 both failed.
+    const hardQuiet=(nowMs-lastVoiceAt)>HARD_QUIET_MS;
+    if(silentRun>=silenceEnd || hardQuiet || speechSamples>=maxS){
+      if(speechSamples>=maxS){                   // should be unreachable — re-acquire the floor
+        console.warn('[vad] MAX_TURN hit; forcing noise-floor re-acquisition',{nf,silT,voiceT});
+        nfBucket=Infinity; nfPrev=Infinity; nfBucketStart=nowMs;
+      }
+      endTurn();
+    }
   }
 }
 /* Streamed mic upload: ship audio WHILE the caller is still speaking, so at end-of-turn only
@@ -1111,12 +1420,16 @@ function onPcm(chunk){
 // 100ms rather than 250ms: at 16 kHz mono that is 3.2 KB a frame, negligible bandwidth, and
 // it removes up to 150ms of tail quantisation between the caller stopping and the last frame
 // reaching the server.
-const STREAM_MIC=true, STREAM_CHUNK_MS=100;
+// The SERVER is the authority on the cadence (/config.frame_ms) — when the STT socket is on,
+// the frame size has to be something it accepts, and a hardcoded page constant could silently
+// disagree with it after a deploy. The literal is only the pre-/config default.
+const STREAM_MIC=true;
+function streamChunkMs(){ return (CONFIG && CONFIG.frame_ms) || 100; }
 let micStreamOpen=false, streamSent=0;
 function pumpMicStream(flush){
   const totalLen=speechFrames.reduce((a,c)=>a+c.length,0), pending=totalLen-streamSent;
   if(pending<=0) return;
-  if(!flush && pending<srate*STREAM_CHUNK_MS/1000) return;
+  if(!flush && pending<srate*streamChunkMs()/1000) return;
   if(!(ws&&ws.readyState===1)){ micStreamOpen=false; return; }
   const all=new Float32Array(pending); let o=0, skip=streamSent;
   for(const f of speechFrames){
@@ -1133,20 +1446,21 @@ function endTurn(){
   const frames=speechFrames;
   const durMs=frames.reduce((a,c)=>a+c.length,0)/srate*1000;
   if(durMs<MIN_SPEECH_MS){                       // a cough, a click, a door
-    speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+    speechFrames=[]; speechSamples=0; silentRun=0; recentVoiced=0; framesSinceVoiced=0;
     if(streamed) wsSend({type:'mic_abort'});
     if(listening&&!endingCall) armNoReply();
     return;
   }
   noReplyCount=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
   tEndOfSpeech=performance.now();                // the clock the HUD reports
+  scheduleFiller();                              // cover Gemini's fixed time-to-first-token
   if(streamed&&ws&&ws.readyState===1){
     pumpMicStream(true);
-    speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+    speechFrames=[]; speechSamples=0; silentRun=0; recentVoiced=0; framesSinceVoiced=0;
     wsSend({type:'mic_end',duration_ms:Math.round(durMs)});
     return;
   }
-  speechFrames=[]; silentSamples=0; speechSamples=0; voicedSamples=0;
+  speechFrames=[]; speechSamples=0; silentRun=0; recentVoiced=0; framesSinceVoiced=0;
   let len=0; frames.forEach(f=>len+=f.length);
   const all=new Float32Array(len); let o=0; frames.forEach(f=>{ all.set(f,o); o+=f.length; });
   const wav=encodeWAV(floatTo16(downsample(all,srate,16000)),16000);
@@ -1209,47 +1523,184 @@ function stopRecog(){ if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){
    seam that made the sibling builds give up on splitting a reply at all).
 
    int16 -> Float32 is a memcpy, so there is no decode cost and no gap between chunks. */
-let pcmCtx=null, pcmRate=0, pcmNext=0, pcmLive=new Set(), pcmFirst=false;
-const PCM_JITTER=0.08;   // 80ms of slack: below this a network hiccup underruns audibly
+let pcmCtx=null, pcmGain=null, pcmRate=0, pcmNext=0, pcmNodes=[], pcmGuard=null;
+let pcmPending=[], pcmPendingSamples=0, pcmStarted=false, pcmFirstArrivalAt=0;
+let pcmHoldTimer=null, pcmUnderruns=0, dropAudioUntilIdle=false;
+/* Must agree with tts.PCM_RATE on the server (/config.pcm_rate); the literal is only the
+   pre-/config default. If the browser grants this rate the ratio is exactly 1.0 and
+   resampleTo below is a no-op — zero added latency and zero added arithmetic. */
+let PCM_RATE_HINT=22050;
+/* Frames arrive 20-85ms apart and the gap after the first flushed clause is routinely
+   80-150ms, so starting playback on frame 1 guarantees an immediate underrun. */
+const PREBUFFER_MS=90, PREBUFFER_MAX_WAIT_MS=200, TARGET_LATENCY_MS=120, MAX_REBASE_LEAD_MS=300;
+const FADE_IN_MS=8, FADE_OUT_MS=12;
+let rsHist=new Float32Array(3), rsPhase=3.0;
 
 function pcmContext(){
-  if(!pcmCtx){
-    pcmCtx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+  // If the context was opened BEFORE /config reported the real rate (the audio unlock can win
+  // that race on a fast click), it is stuck resampling for the whole call. Rebuild it while
+  // idle — the resampler copes, but paying for it because of a load-order race is silly.
+  if(pcmCtx && pcmCtx.state!=='closed' && pcmCtx.sampleRate!==PCM_RATE_HINT
+     && !pcmNodes.length && !pcmPendingSamples){
+    try{ pcmCtx.close(); }catch(e){}
+    pcmCtx=null; pcmGain=null;
   }
-  if(pcmCtx.state==='suspended') pcmCtx.resume().catch(()=>{});
+  if(!pcmCtx || pcmCtx.state==='closed'){
+    const AC=window.AudioContext||window.webkitAudioContext;
+    // Ask for the STREAM's own rate so the graph does no resampling at all. Browsers may refuse,
+    // which is exactly why the resampler below always exists.
+    try{ pcmCtx=new AC({sampleRate:PCM_RATE_HINT, latencyHint:'interactive'}); }
+    catch(e){ pcmCtx=new AC(); }
+    pcmGain=pcmCtx.createGain(); pcmGain.gain.value=1; pcmGain.connect(pcmCtx.destination);
+  }
+  if(pcmCtx.state==='suspended'){ try{ pcmCtx.resume(); }catch(e){} }
   return pcmCtx;
 }
+
+/* ── Stateful resampler ───────────────────────────────────────────────────
+   Buffers were created at the STREAM's rate (22050) on a context running at the hardware rate
+   — 48000 on most laptops, 44100 on plenty of others. The browser resamples each AudioBuffer
+   INDEPENDENTLY, carrying no filter state and no fractional phase across buffers, so every
+   frame join is a step discontinuity: broadband clicks at the frame rate, constant, and
+   completely independent of the network. 22050 into 48000 is a ratio of 2.176 — non-integer,
+   so it clicks. It would have been inaudible at exactly 2.0, which is the kind of luck that
+   keeps a bug like this alive.
+   Carrying 3 samples of history plus the fractional phase is precisely what the browser fails
+   to do. Catmull-Rom rather than linear: this only ever upsamples, so accuracy is all that
+   matters and the extra arithmetic is free at these rates. */
+function rsReset(){ rsHist=new Float32Array(3); rsPhase=3.0; }
+function resampleTo(src, ratio){
+  if(ratio===1) return src;
+  const w=new Float32Array(3+src.length);
+  w.set(rsHist,0); w.set(src,3);
+  const out=[]; let p=rsPhase;
+  while(p+2 < w.length){
+    const i=Math.floor(p), f=p-i;
+    const a=w[i-1], b=w[i], c=w[i+1], d=w[i+2];
+    out.push(0.5*((2*b)+(-a+c)*f+(2*a-5*b+4*c-d)*f*f+(-a+3*b-3*c+d)*f*f*f));
+    p+=ratio;
+  }
+  rsPhase = p-(w.length-3);
+  rsHist = w.slice(w.length-3);
+  return Float32Array.from(out);
+}
+
 function startPcm(rate){
-  if(capturing) return;                    // caller is mid-sentence — never talk over them
-  pcmRate=rate||22050; pcmNext=0; pcmFirst=false;
+  // NOT `if(capturing) return;` — that left pcmRate at 0, so onWsMessage routed every following
+  // PCM frame down the BLOB branch and handed raw int16 to an <audio> element as audio/mpeg.
+  // Clearing your throat as the reply started silently destroyed the whole reply. Dropping the
+  // stream deliberately, with a flag, is the honest version of the same intent.
+  dropAudioUntilIdle = capturing;
+  pcmRate=rate||PCM_RATE_HINT; pcmNext=0; streamDone=false;
+  pcmPending=[]; pcmPendingSamples=0; pcmStarted=false; pcmFirstArrivalAt=0; pcmUnderruns=0;
+  rsReset();
+  if(dropAudioUntilIdle) return;             // caller is mid-sentence — never talk over them
   playing=true; setPill('speaking');
 }
 function pushPcm(buf){
-  if(!pcmRate) return;
-  const ctx=pcmContext(), ep=audioEpoch;
-  const i16=new Int16Array(buf), n=i16.length;
-  if(!n) return;
-  const ab=ctx.createBuffer(1,n,pcmRate), ch=ab.getChannelData(0);
-  for(let i=0;i<n;i++) ch[i]=i16[i]/32768;
+  if(!pcmRate || dropAudioUntilIdle) return;
+  const ctx=pcmContext();
+  const pcm=new Int16Array(buf);
+  if(!pcm.length) return;
+  const f=new Float32Array(pcm.length);
+  for(let i=0;i<pcm.length;i++) f[i]=pcm[i]/32768;
+  const chunk=resampleTo(f, pcmRate/ctx.sampleRate);
+  pcmPending.push(chunk); pcmPendingSamples+=chunk.length;
+  playing=true; setPill('speaking');
+  if(!pcmStarted){
+    // Hold a small cushion before the first sample. The timer is essential rather than
+    // belt-and-braces: a reply SHORTER than the cushion sends no further frames, so without it
+    // that audio sits in the buffer forever and the caller hears nothing at all.
+    if(!pcmFirstArrivalAt) pcmFirstArrivalAt=performance.now();
+    const ready = pcmPendingSamples >= ctx.sampleRate*PREBUFFER_MS/1000;
+    if(!ready && performance.now()-pcmFirstArrivalAt < PREBUFFER_MAX_WAIT_MS){
+      if(!pcmHoldTimer) pcmHoldTimer=setTimeout(()=>{
+        pcmHoldTimer=null;
+        if(!pcmStarted && pcmPendingSamples){ pcmStarted=true; pcmFlush(pcmContext()); }
+      }, PREBUFFER_MAX_WAIT_MS);
+      return;
+    }
+    pcmStarted=true;
+  }
+  if(pcmHoldTimer){ clearTimeout(pcmHoldTimer); pcmHoldTimer=null; }
+  pcmFlush(ctx);
+}
+function pcmFlush(ctx){
+  if(!pcmPendingSamples) return;
   const now=ctx.currentTime;
-  if(pcmNext < now+0.005) pcmNext = now + PCM_JITTER;    // (re)prime after a stall
-  const src=ctx.createBufferSource();
-  src.buffer=ab; src.connect(ctx.destination);
-  src.start(pcmNext);
-  pcmNext += ab.duration;
-  pcmLive.add(src);
-  src.onended=()=>{ pcmLive.delete(src);
-    if(ep===audioEpoch && pcmLive.size===0 && !pcmRate){ playing=false; afterPlay(); } };
-  pcmFirst=true;
+  let fadeIn=false;
+  // Re-base ONLY on a genuine underrun. A test like `pcmNext < now+0.02` fires while 5-19ms of
+  // audio is still scheduled and jumps the cursor forward — manufacturing a 60-75ms hole
+  // mid-sentence, repeatedly, in a stream that had not actually run dry.
+  if(pcmNext <= now){
+    pcmUnderruns++;
+    const lead=Math.min(MAX_REBASE_LEAD_MS, TARGET_LATENCY_MS*Math.pow(2,pcmUnderruns-1))/1000;
+    pcmNext=now+lead; fadeIn=true;
+  }
+  const ab=ctx.createBuffer(1, pcmPendingSamples, ctx.sampleRate);
+  const ch=ab.getChannelData(0);
+  let o=0; for(const c of pcmPending){ ch.set(c,o); o+=c.length; }
+  pcmPending=[]; pcmPendingSamples=0;
+  if(fadeIn || pcmNodes.length===0){                 // splice from silence — ramp in
+    const r=Math.min(ch.length, Math.round(ctx.sampleRate*FADE_IN_MS/1000));
+    for(let i=0;i<r;i++) ch[i]*=i/r;
+  }
+  const src=ctx.createBufferSource(); src.buffer=ab; src.connect(pcmGain);
+  const startAt=pcmNext;
+  src.start(startAt);
+  pcmNext+=ab.duration;
+  pcmNodes.push(src);
+  src.onended=()=>{ const i=pcmNodes.indexOf(src); if(i>=0) pcmNodes.splice(i,1); pcmDone(); };
+  // Stop covering for the reply at the moment it is actually AUDIBLE, not when the first bytes
+  // land — with a prebuffer those differ, and killing the ack early leaves a fresh hole.
+  setTimeout(clearFiller, Math.max(0,(startAt-ctx.currentTime)*1000));
+  // DEAD-MAN SWITCH. `playing` gates the microphone and is only cleared by onended. Audio is
+  // scheduled ahead of the clock, so an interrupted context — tab backgrounded, screen locked,
+  // audio focus lost — means those callbacks never fire and the mic stays gated OFF for the
+  // rest of the call, with nothing in the UI to explain why the agent stopped hearing anyone.
+  if(pcmGuard) clearTimeout(pcmGuard);
+  pcmGuard=setTimeout(()=>{
+    pcmGuard=null;
+    if(!pcmNodes.length && !pcmPendingSamples) return;
+    stopPcm(); streamDone=true; playing=false; afterPlay();
+  }, Math.max(500,(pcmNext-ctx.currentTime)*1000)+2000);
 }
 function endPcm(){
-  pcmRate=0;
-  if(pcmLive.size===0){ playing=false; afterPlay(); }    // nothing arrived, or already drained
+  pcmRate=0; streamDone=true;
+  if(dropAudioUntilIdle){ dropAudioUntilIdle=false; return; }
+  pcmDone();
+}
+function pcmDone(){
+  // Audio still held in the prebuffer counts as "not finished" — otherwise a short reply ends
+  // the turn and unmutes the mic while the agent is about to speak, and it hears itself.
+  if(pcmNodes.length || pcmPendingSamples) return;
+  if(audioQ.length && !qActive){ drainAudio(); return; }   // a fallback blob queued behind it
+  if(streamDone){ playing=false; afterPlay(); }
 }
 function stopPcm(){
+  // Fade before cutting: stop() at an arbitrary sample amplitude is an audible click on every
+  // barge-in and every guard fire.
+  const nodes=pcmNodes; pcmNodes=[];
+  if(pcmGain && pcmCtx && nodes.length){
+    try{
+      const t=pcmCtx.currentTime;
+      pcmGain.gain.cancelScheduledValues(t);
+      pcmGain.gain.setValueAtTime(pcmGain.gain.value, t);
+      pcmGain.gain.linearRampToValueAtTime(0.0001, t+FADE_OUT_MS/1000);
+    }catch(e){}
+    setTimeout(()=>{
+      nodes.forEach(n=>{ try{n.stop();}catch(e){} });
+      try{ pcmGain.gain.cancelScheduledValues(pcmCtx.currentTime);
+           pcmGain.gain.setValueAtTime(1, pcmCtx.currentTime); }catch(e){}
+    }, FADE_OUT_MS+10);
+  }else{
+    nodes.forEach(n=>{ try{n.stop();}catch(e){} });
+  }
   pcmRate=0; pcmNext=0;
-  for(const s of pcmLive){ try{ s.stop(); }catch(e){} }
-  pcmLive.clear();
+  pcmPending=[]; pcmPendingSamples=0; pcmStarted=false; pcmFirstArrivalAt=0; pcmUnderruns=0;
+  rsReset();
+  if(pcmGuard){ clearTimeout(pcmGuard); pcmGuard=null; }
+  if(pcmHoldTimer){ clearTimeout(pcmHoldTimer); pcmHoldTimer=null; }
 }
 
 /* ── Playback (gates the mic so the agent never hears itself) ───────────── */
@@ -1260,13 +1711,19 @@ function clearAudioQueue(){
   if(currentAudio){ try{ currentAudio.pause(); }catch(e){} }
 }
 function playAudio(blob){
-  if(capturing) return;                 // the caller is mid-sentence — never talk over them
+  clearFiller();                        // the real reply is here; drop the backchannel
+  if(dropAudioUntilIdle) return;        // caller barged in — the rest of that reply is dead
   if(!qActive) streamDone=false;
   audioQ.push(blob);
+  // Was `if(capturing) return;` BEFORE the push — which threw the agent's whole reply away
+  // whenever the caller happened to be mid-sentence as it arrived. Queue it and let drainAudio
+  // hold it until they stop; a delayed reply is recoverable, a discarded one is not.
   if(!qActive) drainAudio();
 }
 function drainAudio(){
   if(audioQ.length===0){ qActive=false; if(streamDone){ playing=false; afterPlay(); } return; }
+  // Hold, do not drop, while the caller is still talking.
+  if(capturing){ setTimeout(drainAudio, 120); return; }
   qActive=true; playing=true; setPill('speaking');
   const url=URL.createObjectURL(audioQ.shift()), a=new Audio(url); currentAudio=a;
   const done=()=>{ try{ URL.revokeObjectURL(url); }catch(e){} drainAudio(); };
@@ -1277,7 +1734,7 @@ function endOfStream(){
   // The server sends status:idle right after the last PCM chunk, but the audio is SCHEDULED
   // ahead of the clock and still playing. Re-arming the mic here would open it while the
   // agent is mid-sentence — afterPlay() comes from the last source's onended instead.
-  if(pcmRate || pcmLive.size) return;
+  if(pcmRate || pcmNodes.length || pcmPendingSamples) return;
   if(!qActive&&audioQ.length===0){ playing=false; afterPlay(); }
 }
 function afterPlay(){
