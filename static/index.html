@@ -143,6 +143,9 @@ header .sub{font-size:11.8px;color:var(--muted);margin-top:2px}
 /* --hot is set from the SAME comparison the VAD makes, so the colour flip is the decision
    itself rather than a visual approximation of it. */
 .vu u{background:var(--green);opacity:var(--hot)}
+.bstate{font-size:11px;color:var(--muted2);border:1px solid var(--line);border-radius:99px;
+  padding:1px 7px;margin-left:2px;white-space:nowrap}
+.bstate.on{color:var(--green);border-color:rgba(15,123,79,.35);background:rgba(15,123,79,.07)}
 .vu b{position:absolute;top:-2px;bottom:-2px;width:2px;border-radius:1px;
   left:calc(var(--thr) * 100%);background:var(--azure);opacity:.85}
 
@@ -397,7 +400,7 @@ footer a{color:var(--brand);text-decoration:none}
         <span id="sensval" style="min-width:62px">normal</span>
       </label>
       <label><input type="checkbox" id="discl" checked /> Say it's an AI up front</label>
-      <label title="Headphones, or a phone held to your ear: lets you cut in while the agent is talking. Leave OFF on speakerphone — the agent would hear its own voice and interrupt itself."><input type="checkbox" id="bargeToggle" /> 🎧 Interrupt mode</label>
+      <label title="Talk over the agent whenever you like. It listens for its own voice coming back through your speaker and only activates when it is safe — so on speakerphone it waits, and on headphones it turns itself on."><input type="checkbox" id="bargeToggle" checked /> 🎧 Interrupt me <span id="bargeState" class="bstate">waiting for headphones</span></label>
     </div>
     <div class="typer">
       <input id="typebox" placeholder="…or type instead of speaking" aria-label="Type to the agent" />
@@ -530,8 +533,7 @@ async function choose(s, lang){
   $('hint').innerHTML = s.chat
     ? 'Type short, lowercase, with typos if you like — it is built for that.'
     : 'Press <b>'+esc($('btnStart').textContent)+'</b>, then just talk. '
-      + (bargeOn ? 'Interrupt mode is on — you can talk over it.'
-                 : 'Tick <b>Interrupt mode</b> below if you want to cut in mid-sentence.');
+      + 'It works out on its own whether you can talk over it.';
   renderBrief(); renderGoals({}); renderLab();
   if(recog){ try{ recog.lang=langCode(); }catch(e){} }
   await Promise.all([loadNotes(), init()]);
@@ -1131,17 +1133,59 @@ let sensVal=parseFloat(($('sens')||{}).value)||0.016, fillerGrace=false;
    syllable can never stop a reply.
    Until this shipped the UI promised "you can interrupt it mid-sentence" and onPcm returned
    early whenever `playing` was true — the mic was completely deaf while the agent spoke. */
-let bargeOn=false, bargeVoiced=0;
+let bargeOn=true, bargeVoiced=0;
 const BARGE_SUSTAIN_MS=350;
-try{ bargeOn = localStorage.getItem('verba_barge')==='1'; }catch(e){}
+
+/* ── Echo self-calibration ────────────────────────────────────────────────
+   Interrupting is the single thing that most makes an agent feel human, and every build here
+   has shipped it OFF because of one failure: on a speakerphone the mic hears the agent's own
+   voice, the sustain test passes, and the agent cuts ITSELF off mid-sentence. Asking the caller
+   to know whether their setup is safe is asking the wrong person — they cannot hear what the
+   mic hears.
+
+   So measure it instead. While the agent is speaking we already know it is the only thing
+   making sound, so any mic energy well above the room floor IS the agent coming back through
+   the speaker. One reply is enough to decide, and the decision is re-checked on every reply,
+   so plugging headphones in mid-call turns interrupting on by itself.
+
+   The failure mode this cannot have: deciding "no echo" when there is some, which would let the
+   agent interrupt itself. Hence ECHO_K is low (2.2x the floor) and the verdict defaults to
+   "echo present" until a reply has actually been measured — unsafe assumptions only in the
+   direction that costs a feature, never in the direction that breaks a call. */
+const ECHO_K=2.2, ECHO_MIN_FRAMES=25;
+let echoSum=0, echoFrames=0, echoSuspected=true, echoTold=false;
+function echoSample(rms){ echoSum+=rms; echoFrames++; }
+function echoVerdict(nf){
+  if(echoFrames < ECHO_MIN_FRAMES) return;            // too little of the reply to judge
+  const mean=echoSum/echoFrames, was=echoSuspected;
+  echoSuspected = mean > Math.max(nf,NF_MIN)*ECHO_K;
+  echoSum=0; echoFrames=0;
+  if(was!==echoSuspected || !echoTold){
+    echoTold=true;
+    setBargeUi();
+    if(bargeOn) sysNote(echoSuspected
+      ? '🔇 I can hear myself through your speaker, so interrupting is off — it would cut itself '
+      + 'off. Plug in headphones and it turns on by itself.'
+      : '🎧 Headphones detected — go ahead and talk over me whenever you like.');
+  }
+}
+function bargeActive(){ return bargeOn && !echoSuspected; }
+function setBargeUi(){
+  const el=$('bargeState'); if(!el) return;
+  el.textContent = !bargeOn ? 'off' : (echoSuspected ? 'waiting for headphones' : 'active');
+  el.className = 'bstate' + (bargeActive() ? ' on' : '');
+}
+try{ const s=localStorage.getItem('verba_barge'); if(s!==null) bargeOn = s==='1'; }catch(e){}
 if($('bargeToggle')){
   $('bargeToggle').checked = bargeOn;
   $('bargeToggle').addEventListener('change', e=>{
     bargeOn = !!e.target.checked; bargeVoiced=0;
     try{ localStorage.setItem('verba_barge', bargeOn?'1':'0'); }catch(e){}
-    sysNote(bargeOn ? '🎧 Interrupt mode on — you can talk over the agent. Use headphones.'
-                    : 'Interrupt mode off — the agent will finish its sentence.');
+    setBargeUi();
+    sysNote(bargeOn ? 'Interrupt mode on — it activates as soon as I can tell you are on '
+                    + 'headphones.' : 'Interrupt mode off — I will finish my sentences.');
   });
+  setBargeUi();     // never let the pill rely on the markup happening to match the default
 }
 
 /* The meter shows the LINE the caller has to clear, not just their level — when "it isn't
@@ -1273,7 +1317,10 @@ function onPcm(chunk){
   micFrames++;                                   // proof of life for the startMic watchdog
   if(!listening) return;
   if(playing){
-    if(!bargeOn) return;
+    // Measure the agent's own bleed-through while it speaks — see echoVerdict.
+    {const bn=chunk.length; let bs=0; for(let i=0;i<bn;i++){ const v=chunk[i]; bs+=v*v; }
+     echoSample(Math.sqrt(bs/bn));}
+    if(!bargeActive()) return;
     // Only SUSTAINED speech over the agent's line counts, so a cough, a door slam or a single
     // loud syllable cannot stop it. Measured against the caller's own onset threshold rather
     // than a fixed level, so it follows the same adaptive ladder as everything else.
@@ -1738,6 +1785,9 @@ function endOfStream(){
   if(!qActive&&audioQ.length===0){ playing=false; afterPlay(); }
 }
 function afterPlay(){
+  // The reply just ended, so everything sampled during it was the agent. Rule on it now, while
+  // the noise floor still reflects this room rather than the next utterance.
+  echoVerdict(window.__vad ? window.__vad.nf : NF_MIN);
   // Speaker-tail guard, and clear the pre-roll so nothing recorded during the agent's own line
   // can be prepended to the caller's next utterance.
   muteUntil=performance.now()+200; preRoll=[];
