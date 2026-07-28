@@ -388,6 +388,7 @@ class ElevenStream:
         self._hold = ""
         self._flushed = False
         self.got_audio = False
+        self.err = ""
         self.sample_rate = PCM_RATE
         self.mime = "audio/pcm"
         self._ws = None
@@ -420,15 +421,34 @@ class ElevenStream:
                 "generation_config": {"chunk_length_schedule": _CHUNK_SCHEDULE},
                 "xi_api_key": _ELEVEN_KEYS[_eleven_key_idx] if _ELEVEN_KEYS else ELEVEN_KEY,
             }))
-        except Exception:
+        except Exception as exc:
+            self._note_failure(exc)
             self._ws = None
             return
         self._reader = asyncio.ensure_future(self._read())
         self.ok = True
 
+    def _note_failure(self, exc: Exception) -> None:
+        """Retire a voice this account cannot speak, so later turns skip the handshake.
+
+        MEASURED against the live endpoint: pointing the socket at a voice that is not in the
+        key's library closes it with `1008 policy violation: A voice with voice_id ... does not
+        exist`. The turn recovered correctly — no audio meant main.py synthesised the whole
+        reply through the blob path — but the reason was invisible and NOTHING remembered it, so
+        every subsequent turn paid the same doomed handshake before falling back. The HTTP path
+        already keeps `_dead_voices` for exactly this; the socket was simply not feeding it."""
+        detail = f"{type(exc).__name__}: {exc}"
+        self.err = detail[:200]
+        low = detail.lower()
+        if "does not exist" in low or "voice_not_found" in low or "paid_plan_required" in low:
+            voice = _voice_for(self.lang)
+            if voice not in _dead_voices:
+                _dead_voices.add(voice)
+                print(f"[tts] retiring voice {voice} for {self.lang}: {detail[:120]}")
+
     async def _read(self) -> None:
         try:
-            async for raw in self._ws:
+            async for raw in self._ws:  # noqa: B007
                 try:
                     msg = json.loads(raw)
                 except Exception:
@@ -439,8 +459,11 @@ class ElevenStream:
                     await self._audio.put(base64.b64decode(b64))
                 if msg.get("isFinal"):
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            # A close mid-stream carries the reason too — a voice can be rejected at the first
+            # synth rather than at the handshake, depending on how the account is provisioned.
+            if not self.got_audio:
+                self._note_failure(exc)
         finally:
             self._audio.put_nowait(None)          # sentinel — no more audio for this reply
 
@@ -462,7 +485,13 @@ class ElevenStream:
             return
         # Re-attach anything held back from the previous clause, then decide whether THIS one
         # ends mid-number and must itself be held.
-        raw = (self._hold + " " + raw).strip() if self._hold else raw
+        if self._hold:
+            # NO SEPARATOR when the held tail and the incoming clause are two halves of one
+            # number. The splitter cut "₹8,400" as "₹8," + "400", with no space between them —
+            # putting one back makes it "₹8, 400", which verbalises as two quantities and is
+            # the exact defect the hold exists to prevent.
+            joins_a_number = self._hold[-1] in ",.0123456789" and raw[:1].isdigit()
+            raw = (self._hold + ("" if joins_a_number else " ") + raw).strip()
         self._hold = ""
         m = _TAIL_HOLD.search(raw)
         if m and m.start() > 0 and len(raw) - m.start() <= _TAIL_HOLD_MAX:
@@ -483,10 +512,16 @@ class ElevenStream:
         # continuation intonation that never resolves downward, and renders the rest as a fresh
         # utterance — an audible gap and a rising pitch mid-sentence. On a hard terminator the
         # fragment really IS the end of a sentence, so the latency win costs nothing prosodically.
-        hard = t.endswith(tuple(".?!।…"))
-        if not self._flushed and (hard or len(self.spoken_tts) + len(t) >= _FLUSH_AFTER_CHARS):
-            # The length arm is the safety net: a reply that opens with a long comma-spliced
-            # preamble must not sit unspoken waiting for a full stop still being written.
+        # HARD TERMINATOR ONLY. This used to also flush once ~50 characters had accumulated,
+        # as a safety net against a long comma-spliced preamble sitting unspoken. Measured
+        # against the protocol, that net was both useless and harmful: useless because
+        # chunk_length_schedule[0] is ALREADY 50, so generation starts at the same point
+        # without a flush; harmful because it lands on whichever clause happens to cross the
+        # boundary, which is usually one ending in a comma — and flushing a comma-terminated
+        # fragment tells ElevenLabs the utterance ended there, so it renders continuation
+        # intonation that never resolves and speaks the remainder as a separate utterance.
+        # That is the audible gap and rising pitch mid-sentence.
+        if not self._flushed and t.endswith(tuple(".?!।…")):
             payload["flush"] = True
             self._flushed = True
         try:
