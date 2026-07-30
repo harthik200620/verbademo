@@ -25,9 +25,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from . import _http
-from .prompts import RETRY_LINE, build_system_prompt, norm_lang
+from .prompts import RETRY_LINE, build_system_prompt, norm_lang, with_closing
 from .scenarios import scenario_of
-from .tools import QUERY_TOOLS, fallback_line, lookup_order, tools_for, validate
+from .tools import (QUERY_TOOLS, fallback_line, lookup_order, record_tool_of, tools_for,
+                    validate)
 
 
 def _clean(name: str, default: str = "") -> str:
@@ -799,7 +800,7 @@ def _strip_text_function_call(text: str) -> str:
 # ~380 words of reasoning, read aloud to the caller, while the tool itself fired perfectly.
 # The prompt already forbids this; the prompt is not enough (that is the lesson of every
 # "never speak internal notes" commit in the sibling history). So the last thing between the
-# model and the speaker is a shape check: replies are capped at ~12 words, so anything long,
+# model and the speaker is a shape check: replies are capped at 15 words, so anything long,
 # bracket-heavy, or carrying plumbing vocabulary is not speech and gets the canned line.
 
 _NOT_SPEECH = re.compile(
@@ -1228,6 +1229,18 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
                 continue
 
             spoken = _spoken("".join(text_chunks), name)
+            # THE CALL IS OVER — the client hangs up on this row, so this is the last thing the
+            # caller hears, and it must not be whatever the model happened to be saying when it
+            # recorded. A live call ended on "…results typically in three to four months."
+            # because the model answered a pricing question and called qualify_lead in the same
+            # response. Rule #4 asked it to add a goodbye; nothing verified that it had.
+            #
+            # Appended AFTER _spoken() deliberately: the ~90-word speech guard judges the
+            # MODEL's line, not ours, so our own sentence can never trip it — and the already-
+            # streamed clauses stay a strict prefix of what we return, which is what main.py's
+            # remainder subtraction depends on.
+            if name in (record_tool_of(sid), "request_human"):
+                spoken = with_closing(spoken, lang, sid)
             contents.append({"role": "model", "parts": [{"text": spoken}]})
             return spoken
 
@@ -1241,6 +1254,13 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
             continue
 
         spoken = _spoken(own, last_tool)
+        # THE OTHER WAY OUT OF A RECORDED TURN, and the one that actually fires most often. When
+        # the record tool comes back with no text of its own, the retry above `continue`s and
+        # the model's next completion is plain speech — so it returns through HERE, not through
+        # the write-tool fast path. Without this the farewell was appended only on the rarer
+        # branch: `dryrun all` recorded 10/10 outcomes and closed 0/10.
+        if last_tool in (record_tool_of(sid), "request_human"):
+            spoken = with_closing(spoken, lang, sid)
         # RECORD WHAT THE CALLER ACTUALLY HEARD. The model's raw parts went into `contents`
         # above, but when _spoken() substitutes something else — a suppressed reply, a canned
         # fallback — history keeps the version nobody heard. The model then believes it already

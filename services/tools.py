@@ -62,11 +62,19 @@ QUALIFY_LEAD = _tool(
                                   "cold = no budget or no intent. warm = anything between. "
                                   "not_interested = they explicitly declined. call_later = they "
                                   "asked to be called another time."},
-        "need": {"type": "string", "description": "What they actually want, specifically."},
-        "budget": {"type": "string", "description": "Their budget or range, in their words. "
-                                                    "'wouldn't say' is a valid value."},
-        "timeline": {"type": "string", "description": "When they'd start. 'not sure' is valid."},
-        "authority": {"type": "string", "description": "Whether they decide, or who else does."},
+        "need": {"type": "string", "description": "What they actually want, specifically. Only "
+                                                  "after you have asked."},
+        "budget": {"type": "string", "description": "Their budget or range, IN THEIR WORDS. Fill "
+                                                    "this only once you have asked and they have "
+                                                    "answered. If you asked and they declined, "
+                                                    "write exactly: refused."},
+        "timeline": {"type": "string", "description": "When they'd start, in their words, and "
+                                                      "only once you have asked. If they say "
+                                                      "they aren't sure, record what they DID "
+                                                      "say ('not sure, maybe after Diwali') — "
+                                                      "never a bare 'not sure'."},
+        "authority": {"type": "string", "description": "Whether they decide, or who else does. "
+                                                       "Only after you have asked."},
         "name": _P_NAME, "phone": _P_PHONE,
     },
     ["status"],
@@ -323,6 +331,51 @@ def lookup_order(order_no: str) -> dict:
 _JUNK_NAMES = {"n/a", "na", "none", "null", "nil", "unknown", "customer", "caller",
                "guest", "test", "xxx", "abc", "name", "-", "--"}
 
+# ── Placeholder goal values ──────────────────────────────────────────────────
+# The live failure: on turn TWO the model filled budget, timeline and authority with
+# "wouldn't say" / "not sure" / "not sure" — three questions it had never asked — passed the
+# goal checklist below, recorded, and the client hung up. The checklist tested only .strip(),
+# so ANY non-empty string satisfied it, and the schema itself used to say "'wouldn't say' is a
+# valid value". The model was doing what it was told.
+#
+# EXACT MATCH on the whole normalised value, deliberately, exactly like _JUNK_NAMES above. That
+# is the entire design: a genuine caller answer is never EXACTLY one absence-token, because the
+# model paraphrases what it actually heard. "not sure yet, maybe after Diwali" passes; a bare
+# "not sure" does not. So this rejects invention without ever rejecting an answer.
+#
+# It also cannot loop the model to death, because there is always one legal way out: the literal
+# token `refused`, which the rejection message names. A refusal IS a complete answer — it just
+# has to be a refusal the caller actually gave.
+_PLACEHOLDERS = {
+    "n/a", "na", "n.a", "none", "null", "nil", "nan", "-", "--", "---", "?", "??", "...", "…",
+    "not sure", "unsure", "not sure yet", "no idea", "dont know", "don't know", "do not know",
+    "unknown", "not known", "not yet known", "tbd", "to be determined", "undecided",
+    "not decided", "not yet decided", "not specified", "unspecified", "not provided",
+    "not given", "not mentioned", "not discussed", "not asked", "not stated", "not confirmed",
+    "not available", "not applicable", "no information", "no info", "no answer", "no response",
+    "no comment", "pending", "unclear", "blank", "empty", "missing", "not yet",
+    "wouldnt say", "wouldn't say", "would not say", "didnt say", "didn't say", "did not say",
+    "prefer not to say", "prefers not to say",
+    "xxx", "abc", "string", "value", "placeholder", "todo", "tba",
+    # The record is written in the CALL's language, so these belong here too.
+    "पता नहीं", "मालूम नहीं", "नहीं बताया", "नहीं पता", "बताया नहीं", "कुछ नहीं", "जानकारी नहीं",
+    "तेलियदु", "తెలియదు", "చెప్పలేదు", "ఏమీ లేదు", "సమాచారం లేదు", "తెలియలేదు",
+}
+# The ONE sanctioned way to record "I asked, and they would not answer". Kept OUT of the set
+# above on purpose: the rejection text asks for exactly this word, and winback's / collections'
+# `declined` enum value must never be mistaken for a placeholder.
+_REFUSAL_OK = {"refused", "refused to say", "refused to answer", "declined",
+               "मना कर दिया", "मना किया", "నిరాకరించారు"}
+
+
+def _is_placeholder(v) -> bool:
+    s = re.sub(r"\s+", " ", str(v or "")).strip().strip(".,;:!\"'()[]").lower()
+    if not s:
+        return True
+    if s in _REFUSAL_OK:
+        return False
+    return s in _PLACEHOLDERS or len(s) < 2
+
 # Reasons a call ended without ever being able to collect its goal fields. The wording comes
 # from Rule #7 ("off-topic / test call", "abusive") and the silent-call close note
 # ("no response on call") — the model is told to write exactly these.
@@ -509,12 +562,39 @@ def validate(tool: str, args: dict, sid: str) -> str | None:
         if not short_circuit and _ABANDONED.search(str(args.get("notes") or "")):
             short_circuit = True
         if not short_circuit:
-            gone = [g for g, a in _GOAL_ARGS.get(sid, {}).items()
-                    if g not in optional and not str(args.get(a, "")).strip()]
-            if gone:
-                return _bad(f"This call is not finished — still missing: {', '.join(gone)}. "
-                            f"Ask for what's missing, ONE question, then log it. If they refuse "
-                            f"to give one, put 'refused' in that field and log it.")
+            props = schema["parameters"]["properties"]
+            gone, hollow = [], []
+            for g, a in _GOAL_ARGS.get(sid, {}).items():
+                if g in optional:
+                    continue
+                raw = args.get(a, "")
+                if not str(raw).strip():
+                    gone.append(g)
+                    continue
+                spec = props.get(a) or {}
+                # An enum was already checked in step 2, and a number is never a placeholder.
+                # Without this skip, log_feedback's `rating: 3` fails the two-character floor
+                # and feedback becomes permanently unrecordable — and log_winback's
+                # outcome="declined", log_prospect's interest, log_payment_outcome's outcome
+                # and log_ticket's resolution all break the same way.
+                if (spec.get("enum") or spec.get("type") == "integer"
+                        or str(raw).strip().isdigit()):
+                    continue
+                if _is_placeholder(raw):
+                    hollow.append(g)
+            if gone or hollow:
+                bits = []
+                if gone:
+                    bits.append(f"still missing: {', '.join(gone)}")
+                if hollow:
+                    bits.append(f"{', '.join(hollow)} filled with a placeholder rather than "
+                                f"anything they said")
+                return _bad(
+                    f"This call is not finished — {'; '.join(bits)}. ASK the question you have "
+                    f"not actually asked, ONE at a time, then log their real words. If you DID "
+                    f"ask and they would not answer, put exactly 'refused' in that field. Never "
+                    f"guess a value, and never write 'not sure', 'unknown', 'n/a' or a dash for "
+                    f"a question you never put to them.")
     return None
 
 

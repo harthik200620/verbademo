@@ -17,6 +17,7 @@ named, so nobody later "simplifies" it back into a bug:
 """
 from __future__ import annotations
 
+import re
 import string
 
 from .scenarios import (
@@ -91,22 +92,25 @@ _NUM_GUIDE = {
 # Media for digital marketing services": a compliant, useless turn. They were also labelled
 # "THE LENGTH TO HIT, exactly this size" while the longest ran 8 words, which quietly made 8
 # the real cap rather than the stated 12.
+#
+# CUT AGAIN, for the same reason in the opposite direction. When the rule allowed two sentences
+# and ~25 words for an answer, these ran 13-14 — so the stated 25 never bound anything and a
+# reply like "SEO and content is thirty thousand rupees a month, with results typically in
+# three to four months. What kind of budget did you have in mind for this?" (26 words) was
+# fully COMPLIANT. Since the exemplars are what the model actually copies, they are now the
+# cap: 6-8 words, one fact, optionally one short question. Do not let them creep back up
+# without moving the number in the rule with them.
 _LENGTH_EXEMPLARS = {
-    "english": 'steering — "Ads, SEO, or the website?" · "Tuesday at four — booked." ‖ '
-               'answering — "That\'s expensive": "Ads start at thirty-five thousand a month. '
-               'Most interiors clients see enquiries by week six." · '
-               '"We already have an agency": "Fair enough. Ours is month-to-month after three '
-               '— what is not working with theirs?"',
-    "hindi": 'steering — "बजट कितना सोचा है?" · "मंगलवार शाम चार बजे बुक कर दिया।" ‖ '
-             'answering — "महँगा है": "ऐड्स पैंतीस हज़ार महीने से शुरू। ज़्यादातर क्लाइंट्स को '
-             'छठे हफ़्ते तक एन्क्वायरी आने लगती हैं।" · '
-             '"पहले से एजेंसी है": "ठीक है जी। हमारा तीन महीने बाद महीने-दर-महीने है — उनके साथ '
-             'क्या नहीं चल रहा?"',
-    "telugu": 'steering — "యాడ్స్ లేదా వెబ్‌సైట్?" · "మంగళవారం నాలుగు గంటలకు బుక్ చేశాను." ‖ '
-              'answering — "ఖరీదు ఎక్కువ": "యాడ్స్ నెలకు ముప్పై ఐదు వేల నుంచి. చాలా మంది '
-              'క్లయింట్లకు ఆరో వారానికి ఎంక్వైరీలు మొదలవుతాయి." · '
-              '"ఇప్పటికే ఏజెన్సీ ఉంది": "సరే అండి. మాది మూడు నెలల తర్వాత నెలవారీ — వాళ్ళతో ఏమి '
-              'కుదరట్లేదు?"',
+    "english": '"Ads, SEO, or the website?" · "Tuesday at four — booked." · '
+               '"That\'s expensive" -> "Ads start at thirty-five thousand a month." · '
+               '"We already have an agency" -> "Ours is month-to-month after three — what is '
+               'not working?"',
+    "hindi": '"बजट कितना सोचा है?" · "मंगलवार शाम चार बजे बुक कर दिया।" · '
+             '"महँगा है" -> "ऐड्स पैंतीस हज़ार महीने से शुरू।" · '
+             '"पहले से एजेंसी है" -> "हमारा तीन महीने बाद महीने-दर-महीने है — क्या नहीं चल रहा?"',
+    "telugu": '"యాడ్స్ లేదా వెబ్‌సైట్?" · "మంగళవారం నాలుగు గంటలకు బుక్ చేశాను." · '
+              '"ఖరీదు ఎక్కువ" -> "యాడ్స్ నెలకు ముప్పై ఐదు వేల నుంచి." · '
+              '"ఇప్పటికే ఏజెన్సీ ఉంది" -> "మాది మూడు నెలల తర్వాత నెలవారీ — ఏమి కుదరట్లేదు?"',
 }
 
 # The graceful way out of a conversation that has wandered. Generous first — wanting to poke
@@ -131,21 +135,20 @@ _LANG_RULE = """\
 English, Hindi, Telugu and any mix of them. The ONLY exception: if the {who} clearly switches
 to another language and keeps speaking it, switch with them and continue in that language.
 
-#2 RULE — SHORT, AND WORTH SAYING. Two budgets, and you pick by what the {who} just did.
+#2 RULE — SHORT. ONE SENTENCE, UNDER 15 WORDS. That is the whole rule, on every single turn,
+and it does NOT relax because they asked you something. Count the words before you speak.
 
-  STEERING (most turns — asking your next thing, confirming, acknowledging):
-    ONE sentence, UNDER 12 words. Count them. A plain statement with no question is often the
-    better turn; you do not have to ask something every time.
+  When they ask a question, or push back on price, timing or value, that one sentence must
+  carry ONE CONCRETE THING — a real price, a real timeframe, a real number from what you know.
+  "SEO is thirty thousand a month." is an answer. "It depends" is not, and a vague sentence
+  inside the budget is still a failure.
+  You may add one SHORT question after the fact — but the WHOLE turn still has to come in under
+  fifteen words. If it doesn't, drop the question and ask it next turn. One fact, one turn.
+  Never explain the fact, never justify it, never add the second sentence that softens it.
 
-  ANSWERING (they asked you a direct question, or pushed back on price, timing or value):
-    Up to TWO sentences, about 25 words, and it MUST carry ONE CONCRETE THING — a real price, a
-    real timeframe, a real number from what you know. Then, if it helps, one short question.
-    A vague answer inside the budget is still a failure. "It depends" is not an answer; "from
-    thirty-five thousand a month" is.
-
-  Plus: closing gets one extra short sentence, and READING SOMETHING BACK to confirm it — an
-  order with its total, a phone number digit by digit, a name spelled out — takes the words it
-  truly needs and not one more.
+  The ONE turn allowed to run longer is a READ-BACK you were told to do — an order with its
+  total, a phone number digit by digit, a name spelled out. That takes the words it truly needs
+  and not one more.
 
 BE SPECIFIC OR SAY NOTHING. If they ask what something is, tell them what it actually is, with
 the number. Never answer by restating the thing they asked about — "the pricing guide from us
@@ -156,7 +159,7 @@ Plain spoken words a sharp professional uses — never corporate phrases ("I com
 understand", "kindly", "as per"), never hedging, never padding, never a preamble before the
 answer, never repeating the {who}'s question back to them, never thanking twice, never stacking
 questions. Cut the words that carry nothing; keep the ones that carry a fact.
-HOW THE TWO BUDGETS SOUND: {exemplars}
+HOW LONG A REPLY IS — copy this length exactly: {exemplars}
 
 #3 RULE — DELIVERY. Your reply is read aloud verbatim, so write ONLY the words meant to be
 heard: no stage directions, no emojis, no asterisks, no [bracketed] tags, no markdown, and NO
@@ -168,11 +171,14 @@ on-topic QUESTION from the {who} is NEVER a signal to close, however far along t
 answer it first, always. (Off-topic chatter is different — that follows Rule #7's own
 escalation, not this rule.) Only once you've handled what they need AND their last message
 raised nothing new, ask ONCE, warmly, whether there's anything else; ONLY once they clearly
-decline (no / that's all / thanks, bye) do you give ONE short, courteous goodbye and stop.
-NEVER close, and NEVER call your record tool, in the same turn as an unanswered on-topic
-question — catch yourself and answer it instead. (Whenever you do close — including a Rule #7
-forced close — still record the call exactly as your flow requires; the goodbye never replaces
-the tool call.)
+decline (no / that's all / thanks, bye) do you CALL YOUR RECORD TOOL. That tool call IS the
+close. NEVER close, and NEVER call your record tool, in the same turn as an unanswered on-topic
+question — catch yourself and answer it instead.
+THE GOODBYE IS NOT YOURS TO WRITE. The instant your record tool fires, the farewell is spoken
+for you in {lname} — the sign-off, the thanks, the "our team will be in touch". So never write
+one: no "have a good day", no "thanks for your time", no "someone will call you", no goodbye of
+any kind, in any turn. Your last sentence is the ANSWER; the send-off is added after it. Write
+your own as well and the call ends twice, which is worse than not ending at all.
 
 #5 RULE — THINK, THEN SPEAK (be wise, not a bot). Before every reply, work out what the {who}
 REALLY means — their intent AND their mood — then answer the way a seasoned, emotionally-aware
@@ -245,11 +251,20 @@ the business, a subject with nothing to do with this call — counts.
 # ─────────────────────────────────────────────────────────────────────────────
 _UNIVERSAL = """\
 ALWAYS TRUE, WHATEVER THE CALL:
+- HOW EVERY CALL ENDS — identical in all ten scenarios, and not yours to improvise. When the
+  call has what it needed, do exactly TWO things in the SAME turn: answer whatever they last
+  said, in one sentence, and CALL YOUR RECORD TOOL. Nothing else. Do NOT say goodbye, do NOT
+  say "have a good day", do NOT say "our team will be in touch", do NOT thank them for their
+  time — the closing line is spoken for you the instant the record is written, in the caller's
+  own language, and a second goodbye from you makes the call end twice. Your last sentence
+  should be the ANSWER, not the send-off. And if their last message contained a question,
+  answer it and do NOT record yet: the call ends on the turn AFTER, never on top of a question
+  they just asked.
 - HANDLING PUSHBACK — the part that separates a good caller from a script. The shape every
   time: agree with the feeling in about three words, give ONE concrete fact, ask one short
   question back. Never argue, never repeat a pitch they have already heard, never stack
-  reasons. If they refuse a SECOND time, stop selling entirely — thank them, close warmly, and
-  record the real outcome. Two attempts is the limit; a third is what makes people hang up.
+  reasons. If they refuse a SECOND time, stop selling entirely — record the real outcome and
+  let the call close. Two attempts is the limit; a third is what makes people hang up.
     "It's too expensive"      -> name the real starting number and what it actually buys.
     "We already have someone" -> accept it, name one specific difference, ask what is not
                                  working today. Never rubbish the other supplier.
@@ -427,8 +442,11 @@ HOW YOU SPEAK NUMBERS AND WORDS:
 WHAT THIS CALL MUST END WITH — you are not finished until you have all of these:
 {goal_lines}
 Do not close the call while one of them is still missing and still gettable. If they refuse to
-give one, that is a complete answer too — record it as refused and move on. Never invent a
-value to fill a gap.
+give one — and you have ACTUALLY ASKED — that is a complete answer too: put exactly 'refused'
+in that field and move on. Never write a value into one of these for a question you never put
+to them. "not sure", "unknown", "n/a", "wouldn't say" invented on your own behalf are not
+answers, they are the call pretending to be finished — and a checklist full of them is worse
+than an honest gap, because nobody can tell it was never asked.
 
 IF THEY GO QUIET (you may get a "(System note …)"): follow the note exactly, one short {lname}
 sentence, and never mention the note.
@@ -489,6 +507,68 @@ def ending_line(lang: str) -> str:
     return ENDING.get(lang) or ENDING["english"]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The last thing said on a call that WAS answered
+# ─────────────────────────────────────────────────────────────────────────────
+# Appended by the server the instant the outcome is recorded — never written by the model.
+#
+# Rule #4 used to ask the model to fuse a goodbye into the tool turn, and nothing verified that
+# it had. A live call ended on "…results typically in three to four months." because the model
+# answered a pricing question and called qualify_lead in the same response: the client hangs up
+# on the CRM row, so that answer WAS the last line. Nothing verifies a prompt, so this is not a
+# prompt — the farewell is now data, and it costs no extra model call.
+CLOSING = {
+    "english": "Our team will be in touch shortly. Thanks for your time — have a good day!",
+    "hindi": "हमारी टीम जल्द ही आपसे संपर्क करेगी। समय देने के लिए धन्यवाद — आपका दिन शुभ हो!",
+    "telugu": "మా టీమ్ త్వరలోనే మిమ్మల్ని సంప్రదిస్తుంది. మీ సమయానికి ధన్యవాదాలు — మంచి రోజు కావాలి!",
+}
+
+# HIGH PRECISION ONLY, and the asymmetry is the whole design: a miss costs one redundant polite
+# sentence, a false positive costs the farewell entirely — which is the bug this exists to fix.
+# So: unmistakable sign-offs, and nothing that merely sounds warm ("thanks for that" is not a
+# goodbye, and matching it would swallow the close on a perfectly ordinary turn).
+_HAS_FAREWELL = re.compile(
+    r"(good\s?bye|\bbye\b|good day|have a (good|great|nice|lovely)|take care|see you|"
+    r"दिन शुभ|शुभ दिन|अलविदा|फिर मिलते|फिर बात|मिलते हैं|"
+    r"మంచి రోజు|శుభ దినం|మళ్ళీ కలుద్దాం|మళ్ళీ మాట్లాడదాం)",
+    re.IGNORECASE,
+)
+
+
+def closing_line(lang: str, sid: str = "") -> str:
+    """The scenario's own sign-off if it has one, else the universal line.
+
+    A restaurant order ending "our team will be in touch shortly" is a bad demo, so `order` and
+    the rest carry their own wording — same guarantee, different words."""
+    per = {}
+    if sid:
+        try:
+            per = scenario_of(sid).get("closing") or {}
+        except Exception:
+            per = {}
+    return (per.get(lang) or per.get("english")
+            or CLOSING.get(lang) or CLOSING["english"])
+
+
+def with_closing(spoken: str, lang: str, sid: str = "") -> str:
+    """Append the farewell to whatever the agent just said.
+
+    APPEND, never replace. main.py subtracts the already-streamed prefix from the final text to
+    work out what is left to synthesise, so the streamed text must stay a strict prefix of what
+    we return — replacing it would make the caller hear the whole reply twice."""
+    s = re.sub(r"\s+", " ", (spoken or "")).strip()
+    tail = closing_line(lang, sid)
+    if not s:
+        return tail
+    if s.endswith(tail):
+        return s                      # already closed — calling twice must change nothing
+    if _HAS_FAREWELL.search(s):
+        return s                      # the model already said goodbye; two is worse than one
+    if s[-1] not in ".!?…।॥":
+        s += "."
+    return f"{s} {tail}"
+
+
 def reask_note(sid: str, lang: str) -> str:
     sc = scenario_of(sid)
     who = "customer" if sc["outbound"] else "caller"
@@ -505,7 +585,7 @@ def close_note(sid: str, lang: str) -> str:
 
 
 __all__ = [
-    "ALL_LANGS", "LANG_NAME", "OPENERS", "REASK", "RETRY_LINE",
-    "build_system_prompt", "close_note", "norm_lang", "opener_for", "reask_note",
-    "scenario_of",
+    "ALL_LANGS", "CLOSING", "LANG_NAME", "OPENERS", "REASK", "RETRY_LINE",
+    "build_system_prompt", "close_note", "closing_line", "norm_lang", "opener_for",
+    "reask_note", "scenario_of", "with_closing",
 ]

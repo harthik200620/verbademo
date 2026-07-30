@@ -85,7 +85,7 @@ sibling code:
 - *The model speaks its own reasoning.* ~380 words of chain-of-thought arrived as a text part
   with no `thought: true` flag, and was spoken to the caller while the tool itself fired
   perfectly. `llm.py::_looks_like_speech` is the shape check between the model and the
-  speaker: replies are capped at ~12 words, so anything long, bracket-heavy or carrying
+  speaker: replies are capped at 15 words, so anything long, bracket-heavy or carrying
   plumbing vocabulary gets the canned confirmation instead.
 
 **An abandoned call still records.** Rule #7's third rung force-closes a caller who keeps going
@@ -241,10 +241,12 @@ through a scenario and reports per-turn latency, reply length, and whether an ou
 recorded. It is the fastest way to catch a broken prompt or a tool that never fires.
 
 Its summary reports **median and max words per scenario**, because reply length drifts
-silently: Rule #2 caps ordinary turns at twelve words, and without something watching, the
-model creeps back toward twenty. A change that re-inflates replies should fail visibly here
-rather than be discovered on a live call. Current sweep: **12w median, 18w p90, 11/48 turns
-over 14**.
+silently: Rule #2 caps EVERY turn at fifteen words, and without something watching, the model
+creeps back toward twenty-five. A change that re-inflates replies should fail visibly here
+rather than be discovered on a live call — so the sweep now ASSERTS the pooled median and
+p90 rather than only printing them, and the closing line is subtracted before measuring (it
+is written by the server, not the model, so counting it would flatter nothing and inflate
+every recording turn).
 
 Length is measured with `verbalize.spoken_length`, which counts a spelled-out number as **one
 unit**. A raw word count is actively misleading here: the number rules require amounts to be
@@ -259,8 +261,8 @@ Two hosts, deliberately, because they are not equivalent.
 
 **Render** (`render.yaml`) keeps a process alive, so `/ws` works and everything above is
 active. This is the one worth sending someone. Connect the repo as a Blueprint, then paste
-`.env` into the environment editor in one go — and make sure `STREAM_STT`, `STREAM_LLM`,
-`STREAM_TTS` and `ACK_CLIPS` are all `1`, since they ship off. On the free plan the service
+`.env` into the environment editor in one go — and make sure `STREAM_STT`, `STREAM_LLM` and
+`STREAM_TTS` are all `1`, since they ship off. On the free plan the service
 spins down after 15 minutes idle and cold-starts in ~50 s, so open the link a minute before a
 pitch; the Starter plan removes that.
 

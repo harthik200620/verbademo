@@ -549,7 +549,7 @@ function warmUp(){
   try{ fetch('/static/pcm-worklet.js',{cache:'force-cache'}).catch(()=>{}); }catch(e){}
   // Acks AFTER the opener, never alongside it: the ElevenLabs free tier allows 2 concurrent
   // synths, and stacking five requests at pickup is how you turn a warm-up into a 429 storm.
-  try{ getOpening().then(loadAcks).catch(()=>{}); }catch(e){}
+  try{ getOpening().catch(()=>{}); }catch(e){}
 }
 
 function renderBrief(){
@@ -699,7 +699,9 @@ function onCrm(r){
   }catch(e){}
   sysNote(String(r.status)==='do_not_call' ? '✓ Logged — and flagged do-not-call'
                                            : '✓ Outcome written to the CRM');
-  endingCall=true;
+  // NO endingCall here. This fires mid-turn, from inside gemini_turn, BEFORE the closing line
+  // has been written — latching the hang-up here is what made a call end on the answer to a
+  // pricing question with no goodbye at all. Wait for the server's explicit `call_ended`.
 }
 
 /* ── Transcript UI ──────────────────────────────────────────────────────── */
@@ -819,42 +821,11 @@ function connectWS(){
 }
 function wsSend(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
 
-/* ── Instant acknowledgement ──────────────────────────────────────────────
-   ~1.25s of every reply is Gemini's fixed time-to-first-token — measured on this key pool and
-   immovable at this quality tier, because a one-word reply costs exactly as long as a full
-   sentence. So cover it rather than pretend it isn't there: a short pre-cached "Mm-hmm…" lands
-   260ms after the caller stops speaking, the way a person hums while they think. Cancelled the
-   moment the real reply starts and never repeated back to back, so it stays a backchannel
-   rather than becoming a tic. */
-const ACK_DELAY_MS=260;
-let ackClips=[], ackTimer=null, ackLast=-1, ackAudio=null;
-async function loadAcks(){
-  try{
-    const fd=new FormData();
-    fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
-    const j=await (await fetch('/api/acks',{method:'POST',body:fd})).json();
-    ackClips=(j.acks||[]).filter(a=>a.audio_b64)
-                         .map(a=>URL.createObjectURL(b64toBlob(a.audio_b64,a.mime)));
-  }catch(e){ ackClips=[]; }
-}
-function scheduleFiller(){
-  clearFiller();
-  if(!ackClips.length) return;
-  ackTimer=setTimeout(()=>{
-    ackTimer=null;
-    // Skip entirely when the turn was already fast — there is nothing left to cover, and an ack
-    // that lands on top of the real reply is worse than no ack at all.
-    if(playing || !waitingForServer || !listening || endingCall) return;
-    let i=Math.floor(Math.random()*ackClips.length);
-    if(ackClips.length>1 && i===ackLast) i=(i+1)%ackClips.length;
-    ackLast=i;
-    try{ ackAudio=new Audio(ackClips[i]); ackAudio.play().catch(()=>{}); }catch(e){}
-  },ACK_DELAY_MS);
-}
-function clearFiller(){
-  if(ackTimer){ clearTimeout(ackTimer); ackTimer=null; }
-  if(ackAudio){ try{ ackAudio.pause(); }catch(e){} ackAudio=null; }
-}
+/* ── Instant acknowledgement — REMOVED ────────────────────────────────────
+   A pre-cached "Mm-hmm…" used to land 260ms after the caller stopped, covering the ~1.25s of
+   Gemini time-to-first-token that was immovable at the time. Turns now complete in ~1.5s end to
+   end, so there is nothing left to cover — and a hum before every single reply reads as a tic,
+   not as listening. See the matching note in main.py: do not bring it back behind a flag. */
 async function ensureWS(){
   if(httpMode) return false;
   if(ws&&ws.readyState===1) return true;
@@ -884,6 +855,11 @@ function onWsMessage(ev){
     // leak not at all rather than half of it — which is the whole reason the prebuffer exists.
     case 'tts_abort': stopPcm(); playing=false; break;
     case 'crm_created': onCrm(m.crm); break;
+    // THE HANG-UP. Deliberately NOT crm_created: that arrives from inside the model turn,
+    // before the closing line exists, so ending on it cut the call off mid-sentence. The
+    // server sends this only once the farewell has gone out, and endingCall is consumed later
+    // in afterPlay(), so the goodbye is heard first and the call ends after it.
+    case 'call_ended': endingCall=true; break;
     case 'goal_progress': renderGoals(m.goal||{}); break;
     case 'turn_metrics': onMetrics(m); break;
     case 'lang_switched':
@@ -1001,6 +977,7 @@ async function postTurn(opts){
   if(d.reply) bubble(d.reply,'assistant');
   if(d.goal && Object.keys(d.goal).length) renderGoals(d.goal);
   if(d.crm) onCrm(d.crm);
+  if(d.call_ended) endingCall=true;     // set BEFORE playAudio below, so afterPlay() sees it
   if(Array.isArray(d.history)) httpHistory=d.history;
   if(d.timing) onMetrics({derived:{stt_ms:d.timing.stt_ms,llm_ms:d.timing.llm_ms,
     tts_ms:d.timing.tts_ms,server_ms:d.timing.total_ms},
@@ -1500,7 +1477,6 @@ function endTurn(){
   }
   noReplyCount=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
   tEndOfSpeech=performance.now();                // the clock the HUD reports
-  scheduleFiller();                              // cover Gemini's fixed time-to-first-token
   if(streamed&&ws&&ws.readyState===1){
     pumpMicStream(true);
     speechFrames=[]; speechSamples=0; silentRun=0; recentVoiced=0; framesSinceVoiced=0;
@@ -1698,9 +1674,6 @@ function pcmFlush(ctx){
   pcmNext+=ab.duration;
   pcmNodes.push(src);
   src.onended=()=>{ const i=pcmNodes.indexOf(src); if(i>=0) pcmNodes.splice(i,1); pcmDone(); };
-  // Stop covering for the reply at the moment it is actually AUDIBLE, not when the first bytes
-  // land — with a prebuffer those differ, and killing the ack early leaves a fresh hole.
-  setTimeout(clearFiller, Math.max(0,(startAt-ctx.currentTime)*1000));
   // DEAD-MAN SWITCH. `playing` gates the microphone and is only cleared by onended. Audio is
   // scheduled ahead of the clock, so an interrupted context — tab backgrounded, screen locked,
   // audio focus lost — means those callbacks never fire and the mic stays gated OFF for the
@@ -1758,7 +1731,6 @@ function clearAudioQueue(){
   if(currentAudio){ try{ currentAudio.pause(); }catch(e){} }
 }
 function playAudio(blob){
-  clearFiller();                        // the real reply is here; drop the backchannel
   if(dropAudioUntilIdle) return;        // caller barged in — the rest of that reply is dead
   if(!qActive) streamDone=false;
   audioQ.push(blob);

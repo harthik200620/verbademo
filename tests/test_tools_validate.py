@@ -76,6 +76,52 @@ check("an explicit refusal short-circuits the checklist", "qualify_lead",
 check("do-not-call short-circuits the checklist", "qualify_lead",
       {"status": "cold", "do_not_call": True}, "lead", False)
 
+# ── placeholders: fields the model filled without ever asking (the live failure) ─────
+# Observed on a real call: on turn TWO the model wrote budget="wouldn't say",
+# timeline="not sure", authority="not sure" — three questions it had never put to the caller —
+# passed the checklist, recorded, and the client hung up on a 4/4 goal list made of nothing.
+check("the exact live placeholder set is rejected", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "wouldn't say",
+       "timeline": "not sure", "authority": "not sure"}, "lead", True)
+check("bare dashes are rejected", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "-", "timeline": "-",
+       "authority": "-"}, "lead", True)
+check("n/a, unknown and TBD are rejected", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "N/A", "timeline": "unknown",
+       "authority": "TBD"}, "lead", True)
+# The record is written in the CALL's language, so the blacklist has to cover them too.
+check("hindi placeholders are rejected", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "पता नहीं",
+       "timeline": "नहीं बताया", "authority": "पता नहीं"}, "lead", True)
+check("telugu placeholders are rejected", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "తెలియదు",
+       "timeline": "చెప్పలేదు", "authority": "తెలియదు"}, "lead", True)
+
+# ── …but a refusal the caller ACTUALLY gave is a complete answer ─────────────
+# There must always be exactly one legal way out, or a stubborn model burns all five tool
+# iterations on rejections and the caller gets an apology they did not earn.
+check("'refused' is the sanctioned escape", "qualify_lead",
+      {"status": "warm", "need": "SEO", "budget": "refused", "timeline": "refused",
+       "authority": "refused"}, "lead", False)
+# And the whole design of matching the WHOLE value: a real answer that happens to contain the
+# word "not sure" is still a real answer, because the model paraphrases what it heard.
+check("a real answer that mentions being unsure passes", "qualify_lead",
+      {"status": "warm", "need": "SEO for an interiors studio", "budget": "around 30k",
+       "timeline": "not sure yet, maybe after Diwali",
+       "authority": "he decides with his partner"}, "lead", False)
+
+# ── enums and integers are never placeholders ────────────────────────────────
+# Without the enum/integer skip the two-character floor rejects rating=3 forever and feedback
+# becomes permanently unrecordable. Same for every enum-valued goal field.
+check("an integer rating is not a placeholder", "log_feedback",
+      {"rating": 5, "action": "none", "reason": "quick and clean"}, "feedback", False)
+check("an enum outcome is not a placeholder", "log_winback",
+      {"outcome": "declined", "reason": "moved to a salon near her office",
+       "booking": "none"}, "winback", False)
+check("an enum interest is not a placeholder", "log_prospect",
+      {"interest": "send_info", "current": "an in-house designer",
+       "next_step": "email the portfolio"}, "coldcall", False)
+
 # ── abandoned calls must still record (the live failure) ─────────────────────
 check("off-topic force-close records", "qualify_lead",
       {"status": "cold", "notes": "off-topic / test call"}, "lead", False)

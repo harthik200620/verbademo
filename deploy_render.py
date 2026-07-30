@@ -79,7 +79,7 @@ def read_env() -> list[dict]:
         out.append({"key": k, "value": v})
     # The streaming path is the entire reason for using Render over Vercel. Ship it on, whatever
     # the local file happened to say.
-    forced = {"STREAM_STT": "1", "STREAM_LLM": "1", "STREAM_TTS": "1", "ACK_CLIPS": "1",
+    forced = {"STREAM_STT": "1", "STREAM_LLM": "1", "STREAM_TTS": "1",
               "PYTHON_VERSION": "3.12.7"}
     for k, v in forced.items():
         for e in out:

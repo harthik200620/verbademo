@@ -33,6 +33,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import main  # noqa: E402
 from services import llm, tts  # noqa: E402
+from services.prompts import closing_line  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -120,12 +121,23 @@ except TypeError as e:
 if out:
     # ── the turn actually worked ────────────────────────────────────────────
     eq(bool(out.get("reply")), True, "a reply came back")
-    eq(out["reply"], "Got it — noted, our strategist will call you.",
+    # The model's OWN line must survive as a STRICT PREFIX. api_turn subtracts what was already
+    # spoken from the final text to work out the remainder, so anything that rewrites the front
+    # of the reply makes the caller hear it twice.
+    eq(out["reply"].startswith("Got it — noted, our strategist will call you."), True,
        "the model's own line is spoken, not a canned fallback")
+    # …and the farewell is APPENDED to it. The call ends here, and it must not end on whatever
+    # the model happened to be saying when it recorded.
+    eq(out["reply"].endswith(closing_line("english", "lead")), True,
+       "…and the closing line is appended, so the call never ends mid-thought")
+    eq(out.get("call_ended"), True, "/api/turn tells the client the call is over")
     eq(bool(out.get("crm")), True, "the tool fired and a CRM row was written")
     eq((out.get("crm") or {}).get("status"), "hot", "…with the right outcome")
     eq(bool(out.get("audio_b64")), True, "audio came back through the blocking synth")
-    eq(CALLS["generate"], 1, "one blocking LLM call — the write-tool fast path, no second turn")
+    # THE GUARD THAT MATTERS. The farewell is data, appended server-side — it must never become
+    # "ask the model for a goodbye", which would cost a second round trip at the worst possible
+    # moment and still only HOPE for compliance. If this ever reads 2, that is what happened.
+    eq(CALLS["generate"], 1, "one blocking LLM call — the farewell costs no extra round trip")
     eq(CALLS["synth"] >= 1, True, "tts.synthesize was used")
     # history is what makes /api/turn stateless — the client carries it between requests
     eq(isinstance(out.get("history"), list) and len(out["history"]) >= 2, True,

@@ -33,10 +33,32 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 from services import llm  # noqa: E402
-from services.prompts import opener_for  # noqa: E402
+from services.prompts import closing_line, opener_for  # noqa: E402
 from services.scenarios import norm_lang, scenario_of  # noqa: E402
 from services.tools import lookup_order, to_crm_row, tools_for, validate  # noqa: E402
 from services.verbalize import for_speech, spoken_length  # noqa: E402
+
+# Rule #2's cap, in one place. The label and the threshold used to disagree — it printed
+# "over 12 words" while flagging at 14 — so the number nobody could see was the real one.
+WORD_CAP = 15
+# Ceilings the sweep ASSERTS, on the POOLED distribution only — never per-scenario, because
+# `order` and `booking` are REQUIRED to read an order back and would fail alone.
+#
+# The three numbers measure different things on purpose:
+#   MEDIAN  the steering tier, which is most turns. A handful of read-backs barely move it, so
+#           this is the honest test of "is the agent crisp". Measured 10w after the rewrite.
+#   P90     inevitably lands ON the read-backs: Rule #2 exempts them, order's is mandatory, and
+#           in a ~50-turn sweep they ARE the top decile. 18 was guessed before that was
+#           understood and would fail a sweep doing exactly what it was told.
+#   MAX     the runaway guard, and the one that earns its place. It caught a 52-word turn that
+#           the median and p90 both absorbed silently — the model re-delivering its whole
+#           opening line. Applied to every scenario EXCEPT the ones whose read-back the prompt
+#           makes mandatory: `order` is required to say every item, the quantity, the total and
+#           the mode in one breath, and a three-item order is legitimately ~36 words. Exempting
+#           it by name is honest; raising the ceiling until it fits would blind the check to
+#           the runaways it exists for.
+MEDIAN_CEILING, P90_CEILING, MAX_CEILING = 12, 22, 35
+MAX_EXEMPT = {"order"}
 
 # A caller script per scenario: what a real person would actually say, including the
 # awkward bits — corrections, half answers, a refusal, an off-topic detour.
@@ -135,7 +157,14 @@ async def run(sid: str, lang: str, verbose: bool = True) -> dict:
         n = t["name"]
         handlers[n] = read if n == "lookup_order" else (lambda nn: (lambda a: save(nn, a)))(n)
 
+    # SEED THE OPENER INTO HISTORY, exactly as main.py:513-516 and :843-846 do. This harness
+    # used to only PRINT it — so the model could not see that it had already introduced itself
+    # and opened by delivering the whole introduction a second time. Measured on feedback/hindi:
+    # a 64-word first turn that never happens in production, dragging every scenario's p90 up
+    # and making the length numbers describe a call nobody has.
     opener = opener_for(sid, lang)
+    contents.append({"role": "user", "parts": [{"text": "(call connected)"}]})
+    contents.append({"role": "model", "parts": [{"text": opener}]})
     if verbose:
         print(f"\n\033[1m━━ {sc['service']} · {sc['business']} · {lang} ━━\033[0m")
         print(f"  \033[36magent\033[0m  {opener}")
@@ -153,6 +182,7 @@ async def run(sid: str, lang: str, verbose: bool = True) -> dict:
     # turns at twelve words and the model drifts without something watching — a change that
     # re-inflates replies should fail visibly here, not be discovered on a live call.
     times, wordcounts = [], []
+    closing_reply, reply, longest = None, "", []
     for i, line in enumerate(script):
         t0 = time.perf_counter()
         try:
@@ -164,16 +194,29 @@ async def run(sid: str, lang: str, verbose: bool = True) -> dict:
         times.append(ms)
         # spoken_length, not len(split()): a spelled-out amount is one quantity, not five
         # words. Measured raw, the scenarios that quote prices always look the most verbose.
-        words = spoken_length(reply)
+        #
+        # The closing line is SUBTRACTED first. It is written by the server, not the model, so
+        # counting it measures nothing about the model's verbosity while adding ~14 words to
+        # every recording turn — which would drag the median past its own ceiling and fail a
+        # sweep that was actually fine.
+        bare = reply.replace(closing_line(lang, sid), "").strip()
+        words = spoken_length(bare)
         wordcounts.append(words)
+        longest.append((words, sid, bare))
         if verbose:
             print(f"  \033[33mcaller\033[0m {line}")
             spoken = for_speech(reply, lang)
             print(f"  \033[36magent\033[0m  {reply}")
             if spoken != reply.strip():
                 print(f"  \033[90m spoken\033[0m {spoken}")
-            flag = "  \033[31m← over 12 words\033[0m" if words > 14 else ""
+            flag = f"  \033[31m← over {WORD_CAP} words\033[0m" if words > WORD_CAP else ""
             print(f"  \033[90m {ms}ms · {words}w · {llm.last_served_by}\033[0m{flag}")
+        # THE TURN THAT ENDED THE CALL, captured the moment it happens. In production the client
+        # hangs up once the recording turn's audio finishes, so every turn this harness runs
+        # afterwards is one a real caller would never hear — checking the LAST reply for a
+        # farewell would grade a turn that does not exist.
+        if captured["crm"] is not None and closing_reply is None:
+            closing_reply = reply
         if captured["crm"] is not None and i >= len(script) - 1:
             break
 
@@ -184,12 +227,18 @@ async def run(sid: str, lang: str, verbose: bool = True) -> dict:
             reply = await llm.gemini_turn(contents, extra, handlers, scenario=sid, lang=lang)
         except Exception:
             break
-        wordcounts.append(spoken_length(reply))
+        wordcounts.append(spoken_length(reply.replace(closing_line(lang, sid), "").strip()))
+        if captured["crm"] is not None and closing_reply is None:
+            closing_reply = reply
         if verbose:
             print(f"  \033[33mcaller\033[0m {extra}   \033[90m(harness closer)\033[0m")
             print(f"  \033[36magent\033[0m  {reply}")
 
     ok = captured["crm"] is not None
+    # DID THE CALL ACTUALLY SAY GOODBYE? The whole reason this sweep exists changed: a call that
+    # records but ends mid-sentence is the exact bug being fixed, and it looks identical to a
+    # healthy one from the CRM row alone.
+    closed = bool(closing_reply) and closing_line(lang, sid) in closing_reply
     if verbose:
         print(f"  \033[90m─────\033[0m")
         if ok:
@@ -197,24 +246,30 @@ async def run(sid: str, lang: str, verbose: bool = True) -> dict:
                   f"{captured['crm']['status']} · {captured['crm']['summary'][:110]}")
         else:
             print("  \033[31m✗ no CRM row — the call never recorded an outcome\033[0m")
+        print("  \033[32m✓ closed on the farewell\033[0m" if closed else
+              "  \033[31m✗ the call ended without saying goodbye\033[0m")
         if captured["lookups"]:
             print(f"  \033[90m  {captured['lookups']} live lookup(s)\033[0m")
         wmed = sorted(wordcounts)[len(wordcounts) // 2] if wordcounts else 0
         print(f"  \033[90m  median {sorted(times)[len(times)//2]}ms · "
               f"max {max(times)}ms · {wmed}w median, {max(wordcounts or [0])}w max\033[0m")
-    return {"ok": ok, "crm": captured["crm"], "times": times, "words": wordcounts,
-            "lookups": captured["lookups"]}
+    return {"ok": ok, "closed": closed, "crm": captured["crm"], "times": times,
+            "words": wordcounts, "lookups": captured["lookups"], "longest": longest}
 
 
 async def main():
     args = sys.argv[1:]
     if not args or args[0] == "all":
+        # `dryrun.py all telugu` forces one language across every scenario. Without it the sweep
+        # uses each scenario's default_lang, which covers english and hindi and NEVER telugu —
+        # so a Telugu-only regression could ship having passed a full green run.
+        forced = args[1] if len(args) > 1 else ""
         results = {}
         for sid in SCRIPTS:
-            lang = scenario_of(sid)["default_lang"]
+            lang = norm_lang(forced, sid) if forced else scenario_of(sid)["default_lang"]
             results[sid] = await run(sid, lang)
         print("\n\033[1m━━ summary ━━\033[0m")
-        bad = 0
+        bad, unclosed = 0, []
         all_words = []
         for sid, r in results.items():
             mark = "\033[32m✓\033[0m" if r.get("ok") else "\033[31m✗\033[0m"
@@ -222,19 +277,45 @@ async def main():
             w = r.get("words") or [0]
             all_words += r.get("words") or []
             wmed = sorted(w)[len(w) // 2]
-            # Over 12 is Rule #2's cap; flag anything that has drifted well past it.
-            wflag = "\033[31m" if wmed > 14 else ""
+            wflag = "\033[31m" if wmed > WORD_CAP else ""
+            shut = "" if r.get("closed") else "  \033[31mno goodbye\033[0m"
             print(f"  {mark} {sid:<12} {sorted(t)[len(t)//2]:>5}ms   "
                   f"{wflag}{wmed:>3}w median{'\033[0m' if wflag else ''} /{max(w):>3}w max   "
-                  f"{(r.get('crm') or {}).get('status', r.get('error', 'no outcome'))}")
+                  f"{(r.get('crm') or {}).get('status', r.get('error', 'no outcome'))}{shut}")
             bad += 0 if r.get("ok") else 1
+            if not r.get("closed"):
+                unclosed.append(sid)
         print(f"\n  {len(results) - bad}/{len(results)} scenarios recorded an outcome")
+        print(f"  {len(results) - len(unclosed)}/{len(results)} ended on their closing line"
+              + (f" — missing: {', '.join(unclosed)}" if unclosed else ""))
+        # NAME the worst turns. A p90 on its own says a number is too big without saying which
+        # sentence made it too big — and the answer decides the fix: a sanctioned read-back is
+        # Rule #2 working, padding is Rule #2 failing. Only a transcript tells you which.
+        worst = sorted((x for r in results.values() for x in (r.get("longest") or [])),
+                       key=lambda x: -x[0])[:4]
+        if worst:
+            print("\n  longest turns:")
+            for n, wsid, txt in worst:
+                print(f"    \033[90m{n:>3}w {wsid:<11}\033[0m {txt[:96]}")
+        too_long = False
         if all_words:
-            over = sum(1 for w in all_words if w > 14)
+            over = sum(1 for w in all_words if w > WORD_CAP)
             aw = sorted(all_words)
-            print(f"  reply length: {aw[len(aw)//2]}w median · {aw[int(len(aw)*0.9)]}w p90 · "
-                  f"{max(aw)}w max · {over}/{len(all_words)} turns over 14 words")
-        sys.exit(1 if bad else 0)
+            med, p90, mx = aw[len(aw) // 2], aw[int(len(aw) * 0.9)], max(aw)
+            runaway = max((n for n, s, _t in
+                           (x for r in results.values() for x in (r.get("longest") or []))
+                           if s not in MAX_EXEMPT), default=0)
+            too_long = (med > MEDIAN_CEILING or p90 > P90_CEILING
+                        or runaway > MAX_CEILING)
+            print(f"  reply length: {med}w median · {p90}w p90 · {mx}w max "
+                  f"({runaway}w outside {'/'.join(sorted(MAX_EXEMPT))}) · "
+                  f"{over}/{len(all_words)} turns over {WORD_CAP} words"
+                  + (f"   \033[31m← over the {MEDIAN_CEILING}/{P90_CEILING}/{MAX_CEILING} "
+                     f"ceiling\033[0m" if too_long else ""))
+        # ASSERTED, not merely printed. This used to exit purely on whether a CRM row appeared,
+        # so replies could re-inflate and a call could end mid-sentence with the sweep still
+        # green — which is exactly how both regressions reached a live demo.
+        sys.exit(1 if (bad or unclosed or too_long) else 0)
     sid = args[0]
     lang = args[1] if len(args) > 1 else scenario_of(sid)["default_lang"]
     r = await run(sid, lang)

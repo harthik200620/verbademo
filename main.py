@@ -112,51 +112,20 @@ async def config():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Backchannel acknowledgements
+# Backchannel acknowledgements — REMOVED, deliberately.
 # ─────────────────────────────────────────────────────────────────────────────
-# Short spoken acknowledgements played the instant the caller stops talking, while the model is
-# still thinking. The MEASURED reason they exist: Gemini's time-to-first-token on this tier is
-# ~1.25s of FIXED overhead — a one-word reply costs the same as a full sentence, and removing
-# thinkingLevel:minimal triples it. That wait cannot be optimised away, only covered, the way a
-# person says "mm-hm" while they think. This is the one change here that does not make the
-# pipeline faster and still makes the agent feel faster; the two are not the same thing and it
-# would be dishonest to report it as a latency saving.
+# Short spoken "Mm-hmm…" / "जी…" clips played 260ms after the caller stopped, while the model
+# was still thinking. They existed for a real, measured reason: Gemini's time-to-first-token on
+# this tier used to be ~1.25s of FIXED overhead that could not be optimised away, only covered,
+# the way a person says "mm-hm" while they think.
 #
-# Synthesized once per process and held in memory by the client, so playing one costs no
-# network at all — a filler that had to be fetched would arrive after the thing it covers.
-ACK_CLIPS = (os.getenv("ACK_CLIPS", "0") or "0").strip().lower() not in ("0", "false", "no", "off")
-_ACK_LINES = {
-    "english": ["Mm-hmm…", "Right…", "I see…", "Sure…"],
-    "hindi": ["जी…", "अच्छा…", "जी, समझ गई…", "हाँ जी…"],
-    "telugu": ["అలాగే…", "సరే…", "అర్థమైంది…", "అవునండి…"],
-}
-_ack_cache: dict[str, list] = {}
-
-
-async def _ack_clips(lng: str) -> list[dict]:
-    key = f"{tts.active_provider()}::{tts._voice_for(lng)}::{tts._model_for(lng)}::{lng}"
-    if key in _ack_cache:
-        return _ack_cache[key]
-    out = []
-    for line in _ACK_LINES.get(lng, _ACK_LINES["english"]):
-        try:
-            # SERIAL, not gathered: the ElevenLabs free tier allows 2 concurrent synths and the
-            # opening line may still be rendering when this runs. Stacking them 429s both.
-            a, m = await tts.synthesize(line, lng)
-        except Exception:
-            a, m = None, None
-        if a:
-            out.append({"audio_b64": base64.b64encode(a).decode("ascii"), "mime": m})
-    _ack_cache[key] = out
-    return out
-
-
-@app.post("/api/acks")
-async def api_acks(scenario: str = Form(default="lead"), lang: str = Form(default="")):
-    sid = scenario_of(scenario)["id"]
-    if not ACK_CLIPS or scenario_of(sid)["chat"]:
-        return {"acks": []}
-    return {"acks": await _ack_clips(norm_lang(lang, sid))}
+# That latency is gone — turns now land in ~1.5s end to end — and with nothing left to cover, a
+# hum before every single reply stops reading as listening and starts reading as a tic. It was
+# the first thing anyone noticed on a live call.
+#
+# DO NOT re-add this behind a flag. That is exactly the state it shipped in: ACK_CLIPS defaulted
+# OFF here, and deploy_render.py force-set it ON for every deploy, so the default was a fiction
+# and nobody could turn it off by editing .env. If the latency ever regresses, fix the latency.
 
 
 @app.get("/api/notes")
@@ -280,6 +249,9 @@ def _handlers_for(sid: str, captured: dict, on_row=None, on_goal=None) -> dict:
             captured["dnc"] = True
         row = db.insert_crm(to_crm_row(tool, args, sid))
         captured["crm"] = row
+        # WHICH tool wrote, not just that something did. The end-of-call signal fires on the
+        # RECORD tool only: a lookup or a mid-call note is not a hang-up.
+        captured["tool"] = tool
         captured["goal"].update({k: v for k, v in args.items() if str(v or "").strip()})
         if on_row:
             await on_row(row)
@@ -731,6 +703,13 @@ async def _process_text(ws: WebSocket, state: dict, text: str, silent: bool = Fa
           f"stt {marks.get('stt_ms', 0)} | llm {llm_ms} "
           f"(x{llm.last_attempt_count} {llm.last_served_by}) | tts {tts_ms} | "
           f"clause-stream={'on' if metrics['detail']['clause_stream'] else 'off'}")
+    # THE HANG-UP, and the only thing that causes one. The client used to end the call on
+    # `crm_created` — which is sent from inside gemini_turn, BEFORE any closing text exists — so
+    # a caller heard the answer to their last question and then silence. The CRM row is a CRM
+    # row; this is the hang-up, and it is sent only after the closing line has gone out as
+    # assistant_text and its audio has been streamed.
+    if captured.get("tool") in (record_tool_of(sid), "request_human"):
+        await _send(ws, {"type": "call_ended", "reason": "recorded"})
     await _send(ws, {"type": "status", "state": "idle"})
 
 
@@ -880,9 +859,14 @@ async def api_turn(
         contents.append({"role": "model", "parts": [{"text": reply}]})
     llm_ms = round((time.perf_counter() - t0) * 1000)
 
+    # Derived from THIS request's `captured`, never a module-level flag on llm — last_served_by
+    # and friends are already racy globals, and a race on this one would hang up somebody else's
+    # call. See the matching note on the WS path.
+    ended = captured.get("tool") in (record_tool_of(sid), "request_human")
+
     if sc["chat"]:
         return {"transcript": transcript, "reply": reply, "crm": captured["crm"],
-                "goal": captured["goal"], "history": contents,
+                "goal": captured["goal"], "history": contents, "call_ended": ended,
                 "audio_b64": None, "audio_mime": None, "rest_text": None}
 
     chunks = _split_for_tts(reply)
@@ -909,6 +893,7 @@ async def api_turn(
     return {"transcript": transcript, "reply": reply, "crm": captured["crm"],
             "goal": captured["goal"], "history": contents, "audio_b64": audio_b64,
             "audio_mime": mime, "rest_text": rest_text, "timing": timing,
+            "call_ended": ended,
             # stt.lang_of(detected) alone reports the request BIAS back to the client, because
             # that is what Sarvam echoes in language_code — so it always claimed the language
             # we already had. _detect_language reads the transcript's script first.

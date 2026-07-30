@@ -34,4 +34,3 @@ services:
       #   STREAM_STT=1   transcribe while the caller is still speaking
       #   STREAM_LLM=1   SSE transport (tail protection)
       #   STREAM_TTS=1   clause-fed socket, handshake overlapping the LLM
-      #   ACK_CLIPS=1    backchannel that covers Gemini's fixed time-to-first-token
