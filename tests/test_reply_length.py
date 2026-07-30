@@ -69,10 +69,19 @@ for lang in ALL_LANGS:
         n = spoken_length(q)
         eq(n <= CAP, True,
            f"{lang} exemplar is within the {CAP}-word cap ({n}w): {q!r}")
-    # …and they must not all be trivially short either, or the model learns to say nothing.
-    # An ANSWER has to carry a real fact, and a fact costs words.
-    eq(max(spoken_length(q) for q in quoted) >= 5, True,
-       f"{lang} exemplars include a substantive answer, not only two-word fragments")
+    # …and they must BRACKET the cap, not hug the floor. This is the other half of the same
+    # failure, and it has now happened in both directions: first 8-word exemplars silently made
+    # 8 the real cap against a stated 12, then the fix over-corrected to 4-9 against a stated 15.
+    # A 9-word ceiling physically cannot carry the shape an objection answer is required to have
+    # — three words agreeing, one concrete fact, one short question — so the model drops the
+    # question, and dropping the question is what stalls a call.
+    longest = max(spoken_length(q) for q in quoted)
+    eq(longest >= CAP - 4, True,
+       f"{lang} exemplars reach the cap they are copied from ({longest}w against a {CAP}w cap) "
+       f"— an objection answer must be SHOWN at full length or the shape is unreachable")
+    # The short end must stay short, or ordinary steering turns inflate to match.
+    eq(min(spoken_length(q) for q in quoted) <= 6, True,
+       f"{lang} still shows a genuinely short steering line")
 
 # ── an answering exemplar carries a concrete fact ────────────────────────────
 # The other half of Rule #2: short AND specific. A cap that produces "It depends" has made

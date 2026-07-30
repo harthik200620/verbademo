@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import string
+from datetime import datetime, timedelta, timezone
 
 from .scenarios import (
     ALL_LANGS, LANG_NAME, agent_name, business_name, known_name, norm_lang, scenario_of,
@@ -117,13 +118,14 @@ _LENGTH_EXEMPLARS = {
 # at an AI agent is a completely fair impulse and half the reason anyone stays on the line —
 # then back to the point, in the same breath. Never corrective, never a telling-off.
 # Each language carries the INTENT, not a translation of the English wording.
+# The model copies this verbatim, so it has to obey the rules quoted beside it. The old English
+# line ran 21 words against the 15-word cap and contained "[pending question]" — a bracketed tag,
+# which Rule #3 bans by name. The Hindi and Telugu ones carried a Latin "AI" into a prompt whose
+# number guide says Latin is mispronounced by the voice.
 _OFFTOPIC_LINE = {
-    "english": '"I can tell you\'d like to explore what an AI agent can do — happy to, '
-               'another time. Right now, [pending question]"',
-    "hindi": '"बिल्कुल समझ सकती हूँ जी, AI एजेंट से बात करके देखने का मन होता है — वो फिर कभी '
-             'ज़रूर करेंगे। अभी बताइए, …"',
-    "telugu": '"అర్థమైంది అండి, AI ఏజెంట్‌తో మాట్లాడి చూడాలనిపిస్తుంది — అది మరోసారి తప్పకుండా '
-              'చేద్దాం. ఇప్పుడు చెప్పండి, …"',
+    "english": '"Happy to explore that another time — right now, though…"',
+    "hindi": '"वो फिर कभी ज़रूर, जी — अभी बताइए…"',
+    "telugu": '"అది మరోసారి తప్పకుండా — ఇప్పుడు చెప్పండి…"',
 }
 
 
@@ -376,10 +378,14 @@ OPENERS = {
 # It is a toggle rather than a hard-coded line because it makes a better argument
 # both ways: on, the caller is told it's an AI and still can't tell; off, it's the
 # reveal Verba's own demo notes describe.
+# This rides on the OPENER, so it is the first thing every caller hears. The Hindi and Telugu
+# versions said "AI" in Latin letters — verified to pass through for_speech() untouched and reach
+# Sarvam, which the same prompt's number guide says mispronounces Latin text. Spelled in-script,
+# it is read as the two letters a person would say.
 _DISCLOSE = {
     "english": " Quick heads up — I'm an AI assistant.",
-    "hindi": " एक बात बता दूँ — मैं एक AI असिस्टेंट हूँ।",
-    "telugu": " ఒక విషయం చెప్తాను — నేను AI అసిస్టెంట్‌ని.",
+    "hindi": " एक बात बता दूँ — मैं एक ए-आई असिस्टेंट हूँ।",
+    "telugu": " ఒక విషయం చెప్తాను — నేను ఏ-ఐ అసిస్టెంట్‌ని.",
 }
 
 
@@ -395,8 +401,57 @@ def opener_for(sid: str, lang: str = "", disclose: bool = True) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Assembly
 # ─────────────────────────────────────────────────────────────────────────────
+# Every `known` key the model is allowed to see, in reading order, with the label it is shown
+# under. A key absent from here never reaches the prompt at all — which is the bug this table
+# fixes: `known` used to arrive ONLY through {placeholders} a scenario author remembered to
+# write, so `company`, `usual`, `last_visit` and `loan_kind` were held and never rendered. The
+# agent asked a caller what business he runs while holding company="Bloom Interiors".
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+_KNOWN_LABELS = {
+    "name": "Their name",
+    "company": "Their company",
+    "phone": "Their number",
+    "source": "Why you are calling",
+    "last_visit": "Last visit",
+    "usual": "What they usually book",
+    "branch": "Their branch",
+    "test": "The test they had",
+    "loan_kind": "Loan type",
+    "amount": "Amount due",
+    "due_date": "Due date",
+    "loan_ref": "Reference",
+    "emi_no": "Instalment",
+}
+
+
+def _known_block(sc: dict, ctx: dict) -> str:
+    """What is on the agent's screen before the call starts.
+
+    Rendered as data rather than woven into prose, so Rule #6's "never ask for what you already
+    know" has something concrete to point at, and so adding a `known` key is enough to make it
+    usable — no scenario rewrite required."""
+    if (sc.get("known") or {}).get("anonymous"):
+        return ("WHO YOU ARE SPEAKING TO — you do not know, and nothing on your screen says. "
+                "Never use a name until they give you one, and never guess one.")
+    rows = "\n".join(f"- {label}: {ctx[key]}"
+                     for key, label in _KNOWN_LABELS.items()
+                     if str(ctx.get(key) or "").strip())
+    if not rows:
+        return ""
+    return ("WHAT YOU ALREADY KNOW ABOUT THEM — it is on your screen, in front of you, before "
+            "they say a word. NEVER ask for any of it. Use it.\n" + rows)
+
+
 def _context(sc: dict, lang: str) -> dict:
     ctx = dict(sc.get("known") or {})
+    # LANGUAGE-CORRECT KNOWN VALUES. `branch_hi` = "जुबली हिल्स" sat unused beside branch =
+    # "Jubilee Hills" while the number guide two blocks away bans Latin script outright as
+    # "mispronounced by the voice". Only `name` was ever swapped.
+    suffix = {"hindi": "_hi", "telugu": "_te"}.get(lang, "")
+    if suffix:
+        for key in [k for k in ctx if not k.endswith(("_hi", "_te"))]:
+            ctx[key] = ctx.get(f"{key}{suffix}") or ctx[key]
     ctx.update({
         "business": business_name(sc, lang),
         "agent": agent_name(sc, lang),
@@ -405,7 +460,22 @@ def _context(sc: dict, lang: str) -> dict:
     })
     if known_name(sc, lang):
         ctx["name"] = known_name(sc, lang)
-    return ctx
+    # RELATIVE DATES, so scenario data cannot rot. collections shipped due_date="2026-07-28"
+    # against a card promising the EMI is "due in a few days"; every day the demo ran, that date
+    # drifted further into the past.
+    # ISO on purpose: verbalize._RE_ISO_DATE already turns "2026-08-03" into "third August" in
+    # all three languages on the way to the speaker, which is exactly what the hard-coded value
+    # relied on. Same rendering, one less thing to maintain by hand.
+    today = datetime.now(_IST).date()
+    dates = {
+        "today": today.isoformat(),
+        "tomorrow": (today + timedelta(days=1)).isoformat(),
+        "in_three_days": (today + timedelta(days=3)).isoformat(),
+        "in_a_week": (today + timedelta(days=7)).isoformat(),
+        "last_month": (today - timedelta(days=30)).isoformat(),
+    }
+    return {k: (_fmt(v, dates) if isinstance(v, str) and "{" in v else v)
+            for k, v in ctx.items()}
 
 
 def build_system_prompt(today_str: str, scenario: str = "", lang: str = "",
@@ -425,6 +495,8 @@ You are "{ctx['agent']}", working for {ctx['business']}, {sc['sector']}. This is
 {channel}. Your first line was already delivered the moment the line connected:
 "{opener_for(sc['id'], lang, disclose)}"
 Never greet or introduce yourself again. Continue from whatever they say next.
+
+{_known_block(sc, ctx)}
 
 {_LANG_RULE.format(lname=lname, who=who, exemplars=_LENGTH_EXEMPLARS[lang], offtopic=_OFFTOPIC_LINE[lang])}
 

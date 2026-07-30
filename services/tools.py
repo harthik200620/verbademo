@@ -20,7 +20,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
-from .scenarios import scenario_of
+from .scenarios import GOAL_ARGS, scenario_of
 from .verbalize import normalise_phone
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -385,21 +385,16 @@ _ABANDONED = re.compile(
     re.IGNORECASE,
 )
 
-# The scenario's goal fields, mapped to the tool argument that satisfies each.
-# The record tool is rejected until all of them are present.
-_GOAL_ARGS = {
-    "lead": {"need": "need", "budget": "budget", "timeline": "timeline", "authority": "authority"},
-    "chat": {"need": "need", "budget": "budget", "timeline": "timeline", "authority": "authority"},
-    "coldcall": {"interest": "interest", "current": "current", "next_step": "next_step"},
-    "winback": {"reason": "reason", "offer_response": "outcome", "booking": "booking"},
-    "feedback": {"rating": "rating", "reason": "reason", "action": "action"},
-    "collections": {"outcome": "outcome", "ptp_date": "ptp_date"},
-    "booking": {"name": "name", "phone": "phone", "service": "service", "date": "date",
-                "time": "time"},
-    "support": {"order": "order_no", "issue": "issue", "resolution": "resolution"},
-    "reception": {"topic": "topic", "dates": "dates", "hold": "outcome"},
-    "order": {"items": "items", "mode": "mode", "address": "address", "payment": "payment"},
-}
+# The scenario's goal fields, mapped to the tool argument that satisfies each. The record tool
+# is rejected until all of them are present.
+#
+# It lives in scenarios.py now, beside the `goal` list it maps, because the CLIENT needs it too:
+# index.html renders the checklist by looking up each goal key in the tool arguments, and three
+# keys are not their argument's name. It carried one hard-coded special case (order -> order_no)
+# and none for the other two, so `winback.offer_response` and `reception.hold` could NEVER tick
+# — a flawless win-back call ended showing 2/3 under a caption promising the agent would not
+# close until they were all done. One map, shipped to both sides.
+_GOAL_ARGS = GOAL_ARGS
 
 # Goal fields that are legitimately optional depending on the branch taken — a
 # hold that wasn't wanted, an address on a pickup order. Never block on these.

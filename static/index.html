@@ -569,7 +569,10 @@ function renderGoals(vals){
   const box=$('goals'); box.innerHTML='';
   let done=0;
   SC.goal.forEach(g=>{
-    const v = vals[g.key] || vals[g.key==='order'?'order_no':g.key] || '';
+    // g.arg is the tool argument that fills this row, and it is NOT always g.key — winback's
+    // "offer_response" and reception's "hold" are both filled by "outcome". This used to be one
+    // hard-coded order->order_no case, so those two rows could never tick however good the call.
+    const v = vals[g.arg] || vals[g.key] || '';
     const has = String(v||'').trim().length>0;
     if(has) done++;
     const d=document.createElement('div');

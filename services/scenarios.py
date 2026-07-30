@@ -110,7 +110,8 @@ LEAD = {
     "guards": """WHAT YOU DO NOT KNOW — say so honestly, never invent:
 - Exact pricing for their specific job — the strategist quotes that on the follow-up call.
 - Guaranteed rankings, guaranteed lead volume, or a specific ROI number. Never promise one.
-- Which other clients you work with by name — say "interiors and real estate, mostly".
+- Which other clients you work with BY NAME — say "mostly interiors, real estate, health and
+  D2C" instead. The sectors are yours to say; the names are not.
 - Anything about their own current agency's contract.""",
 }
 
@@ -256,7 +257,9 @@ not by talking:
 4. If the reason is CIRCUMSTANCE (moved, no time, went elsewhere): accept it lightly, then
    name the one thing that's changed which might bring her back.
 5. OFFER: the thirty percent returning-customer offer, once, plainly. Never repeat it twice.
-6. BOOKING: if she's interested, get a day and a rough time and confirm the branch.
+   WHAT SHE SAYS BACK IS THE OUTCOME — rebooked if she takes a slot, offer_accepted if she
+   wants it but not yet, maybe_later, declined, or complaint if that is what it turns into.
+6. BOOKING: if she's interested, get a day and a rough time.
 7. Call log_winback once with the reason, her response, and the slot if there is one. That call ENDS the call — say no goodbye of your own.""",
     "guards": """WHAT YOU DO NOT KNOW — never invent:
 - Any discount beyond the thirty percent offer above.
@@ -328,14 +331,17 @@ FEEDBACK = {
    - Apologise once, specifically about what they said, not generically.
    - Do NOT defend the lab, do NOT explain why it happened, do NOT ask them to be reasonable.
    - Tell them the patient-care team will call back, and set action="callback".
-5. If the score is FOUR OR FIVE, thank them once and stop. Do not ask for a Google review —
-   that is not your job and it sours a good call.
+5. If the score is FOUR OR FIVE, thank them once, set action="none", and stop. Do not ask
+   for a Google review — that is not your job and it sours a good call.
 6. Call log_feedback once. Never end the call without it, even if they hang up angry. That call ENDS the call — say no goodbye of your own.""",
     "guards": """WHAT YOU DO NOT KNOW — never invent, and be careful, this is health data:
 - Their test RESULTS. Never read out, interpret, or comment on any medical value. If they
   ask what a result means, say a doctor or the lab's physician must explain it.
 - Whether a specific result is "normal" or "nothing to worry about". Never reassure medically.
-- Why a specific report was delayed — say the team will check and call back.
+- WHY this particular report was delayed — you do not know the cause and must never guess one.
+  You MAY say the promise out loud (twenty-four hours routine, forty-eight specialised), say
+  plainly that this one missed it, apologise ONCE, and hand it to the patient-care team.
+  Stonewalling a complaint you have the published answer to is the worst thing you can do here.
 - Never diagnose, never suggest treatment, never name a medicine.""",
 }
 
@@ -376,7 +382,10 @@ COLLECTIONS = {
         "name": "Rahul Sharma", "name_hi": "राहुल शर्मा", "name_te": "రాహుల్ శర్మ",
         "phone": "9848011223", "company": "",
         "source": "a personal loan customer with an instalment due",
-        "amount": "₹8,400", "due_date": "2026-07-28", "loan_ref": "SF-4521",
+        # RELATIVE, not absolute. This was the literal "2026-07-28" against a card promising the
+        # EMI is "due in a few days" — so every day the demo ran, the reminder was about a date
+        # further in the past. _context() resolves the token; verbalize speaks it as a date.
+        "amount": "₹8,400", "due_date": "{in_three_days}", "loan_ref": "SF-4521",
         "loan_kind": "personal loan", "emi_no": "seven of twenty-four",
     },
     "goal": [
@@ -573,8 +582,9 @@ and stop; never narrate what you are about to do:
    can't find it with that number, ask them to check it once, and try again. Only after a
    second failure offer to raise a ticket with their phone number instead.
 5. Answer what they asked, from what came back. One line.
-6. If something is genuinely wrong — damaged, missing, very late, faulty — raise a ticket
-   with log_ticket. Get a phone number for the callback.
+6. Whatever they came for IS the issue — log it in their words, one line. If something is
+   genuinely wrong — damaged, missing, very late, faulty — raise a ticket with log_ticket and
+   get a phone number for the callback: resolution is ticket_raised, callback or escalated.
 7. If they simply asked a question and it's answered, still call log_ticket once with
    resolution="resolved_on_call". That call ENDS the call — say no goodbye of your own.""",
     "guards": """WHAT YOU DO NOT KNOW — never invent:
@@ -647,8 +657,9 @@ RECEPTION = {
 3. To HOLD a room you need a name and a phone number. Read the number back digit by digit.
 4. If asked something not in your facts, say plainly that you'll have the team confirm — and
    take a number so they actually can.
-5. Call log_enquiry once before the call ends, whatever the outcome. Even a pure enquiry with
-   no booking is worth recording — that is the point. That call ENDS the call — say no goodbye of your own.
+5. Call log_enquiry once before the call ends, whatever happened — a pure enquiry with no
+   booking is still worth recording, and that is the point. The outcome is room_held if you
+   held one, will_call_back if they are thinking about it, otherwise enquiry_only. That call ENDS the call — say no goodbye of your own.
 
 IF THEY ASK ABOUT SOMETHING BROAD ("tell me about the place"), do NOT list your own abilities
 or recite the whole fact sheet. Name two or three real things and hand it back to them.""",
@@ -695,6 +706,9 @@ ORDER = {
     "known": {"anonymous": True},
     "goal": [
         ("items", "Items and quantities"),
+        # place_order REQUIRES a total and the card calls it the point of this scenario ("a
+        # total that has to be right") — yet the checklist never showed it.
+        ("total", "Order total"),
         ("mode", "Delivery or pickup"),
         ("address", "Address, if delivery"),
         ("payment", "Cash or online"),
@@ -734,7 +748,7 @@ Payment: cash on delivery, or a UPI link on WhatsApp.""",
   can note it as a preference, but you cannot invent a price for it.
 - Whether an item is sold out — say the kitchen will call if anything is unavailable.
 - A delivery time faster than the published thirty-five to fifty minutes, however much they
-  push. Never promise twenty minutes to get the order.
+  push. Twenty minutes is PICKUP and you may say it; never offer it for delivery.
 - Any discount or free item. You cannot give one.""",
 }
 
@@ -793,6 +807,27 @@ CHAT = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 ALL = [LEAD, COLDCALL, WINBACK, FEEDBACK, COLLECTIONS, BOOKING, SUPPORT, RECEPTION, ORDER, CHAT]
+
+# Each scenario's goal key -> the record-tool argument that satisfies it. Three of them differ
+# from the key, which is why this has to be data both sides can read: tools.py rejects the record
+# tool until every mapped argument is present, and the browser renders the live checklist by the
+# same map. It used to live in tools.py with the client carrying one hard-coded special case, so
+# `winback.offer_response` and `reception.hold` — both backed by the argument `outcome` — could
+# never tick, whatever the caller said.
+GOAL_ARGS = {
+    "lead": {"need": "need", "budget": "budget", "timeline": "timeline", "authority": "authority"},
+    "chat": {"need": "need", "budget": "budget", "timeline": "timeline", "authority": "authority"},
+    "coldcall": {"interest": "interest", "current": "current", "next_step": "next_step"},
+    "winback": {"reason": "reason", "offer_response": "outcome", "booking": "booking"},
+    "feedback": {"rating": "rating", "reason": "reason", "action": "action"},
+    "collections": {"outcome": "outcome", "ptp_date": "ptp_date"},
+    "booking": {"name": "name", "phone": "phone", "service": "service", "date": "date",
+                "time": "time"},
+    "support": {"order": "order_no", "issue": "issue", "resolution": "resolution"},
+    "reception": {"topic": "topic", "dates": "dates", "hold": "outcome"},
+    "order": {"items": "items", "total": "total", "mode": "mode", "address": "address",
+              "payment": "payment"},
+}
 SCENARIOS = {s["id"]: s for s in ALL}
 DEFAULT = "lead"
 
@@ -821,8 +856,13 @@ def known_name(sc: dict, lang: str) -> str:
 
 
 def goal_fields(sid: str) -> list[dict]:
-    """The checklist the UI renders and the server enforces."""
-    return [{"key": k, "label": lbl} for k, lbl in scenario_of(sid)["goal"]]
+    """The checklist the UI renders and the server enforces.
+
+    `arg` is the tool argument that fills the row. The client needs it because three goal keys
+    are not their argument's name — without it those rows can never tick."""
+    args = GOAL_ARGS.get(scenario_of(sid)["id"], {})
+    return [{"key": k, "label": lbl, "arg": args.get(k, k)}
+            for k, lbl in scenario_of(sid)["goal"]]
 
 
 def picker() -> list[dict]:
@@ -835,7 +875,7 @@ def picker() -> list[dict]:
                 "business": s["business"], "sector": s["sector"], "agent": s["agent"],
                 "icon": s["icon"], "chat": s["chat"], "outbound": s["outbound"],
                 "default_lang": s["default_lang"], "langs": ALL_LANGS,
-                "card": s["card"], "goal": [{"key": k, "label": l} for k, l in s["goal"]],
+                "card": s["card"], "goal": goal_fields(s["id"]),
             }
             for s in ALL if s["tab"] == tab_id
         ]
