@@ -236,9 +236,9 @@ async def _generate(contents: list, scenario: str, lang: str,
         consumed the whole walk and it gave up having tried exactly one key of 104 — the original
         deadline bug reproduced on this path, by its own defaults rather than by an off-by-one.
         A per-key budget must sit well UNDER the turn budget or the walk cannot walk, and that
-        matters most against a TPM-throttled free tier, where an over-quota key hangs instead of
-        rejecting. Clamped to what is left, so the last key never overruns the turn."""
-        return max(0.5, min(_TTFT_GIVEUP_MS / 1000, hard_deadline - time.monotonic()))
+        matters most when an over-quota or overloaded key hangs instead of rejecting. Clamped to
+        what is left, so the last key never overruns the turn."""
+        return max(0.5, min(_HTTP_KEY_GIVEUP_MS / 1000, hard_deadline - time.monotonic()))
 
     def _body_for(key_idx: int) -> tuple[str, dict]:
         model = _model_for_key_idx(key_idx)
@@ -406,7 +406,14 @@ _TURN_GIVEUP_MS = _int_env("GEMINI_TURN_GIVEUP_MS", 12000)
 # Why the walk needs the room: a TPM-throttled free-tier key does not 429, it HANGS. A rejection
 # costs ~170ms and lets the walk sprint, but a stall costs the full per-key budget, so 12s buys
 # only two or three keys out of 80 healthy ones. This is a runaway guard, not a latency target.
-_HTTP_TURN_GIVEUP_MS = _int_env("GEMINI_HTTP_TURN_GIVEUP_MS", 40000)
+_HTTP_TURN_GIVEUP_MS = _int_env("GEMINI_HTTP_TURN_GIVEUP_MS", 30000)
+# And the per-key budget there is a FULL-COMPLETION budget, which _TTFT_GIVEUP_MS is not.
+# 4500 is how long one key gets to produce a FIRST TOKEN on the streaming path; spending it on a
+# blocking call means abandoning every key whose whole reply takes longer than 4.5s. During a
+# Gemini degradation — 503s across the pool, successful completions measured at 7s, 14s and 23s
+# on gemini-flash-latest — that abandons the keys that were about to answer, and the turn cannot
+# succeed at all. Matches the shared client's own read timeout, which is where 12s comes from.
+_HTTP_KEY_GIVEUP_MS = _int_env("GEMINI_HTTP_KEY_GIVEUP_MS", 12000)
 _MAX_RACE = _int_env("GEMINI_MAX_RACE", 2)
 # Concurrency while REPLACING REJECTED keys, not while speculating. At 3 the p50 went
 # 2501ms -> 7483ms upstream; 1 keeps a 429 cascade moving without becoming a burst.
