@@ -43,7 +43,16 @@ def _load_keys() -> list[str]:
     """Gather Gemini API keys for rotation: a comma-separated GEMINI_API_KEYS, plus the
     numbered GEMINI_API_KEY / GEMINI_API_KEY_2 … _150 vars. Deduped, empties dropped.
     Order matters and is preserved end-to-end (see _key_tiers) — append new keys, never
-    insert or reorder existing ones."""
+    insert or reorder existing ones.
+
+    GEMINI_ONLY_KEY pins the pool to exactly one key and ignores every other var. It exists so
+    a single known-good key can be used without deleting the other hundred from the
+    environment: unset it and the full pool comes straight back, no redeploy of code. The cost
+    is real and worth stating — with one key there is nothing to rotate to, so a 429 or a 503
+    fails the turn outright rather than moving on."""
+    only = _clean("GEMINI_ONLY_KEY")
+    if only:
+        return [only]
     raw = []
     combo = _clean("GEMINI_API_KEYS")
     if combo:
