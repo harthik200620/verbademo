@@ -17,7 +17,7 @@ import unicodedata
 
 import httpx
 
-from . import _http
+from . import _http, sarvam_keys
 
 # Guarded on purpose. The streaming socket needs `websockets`, but Vercel builds this project
 # too, and a serverless bundle missing the wheel must still boot and simply report
@@ -38,6 +38,7 @@ def _clean(name: str, default: str = "") -> str:
     return v.strip().strip('"').strip("'").strip()
 
 
+# Kept for compatibility; the pool is the source of truth (see services/sarvam_keys.py).
 SARVAM_API_KEY = _clean("SARVAM_API_KEY")
 SARVAM_STT_MODEL = _clean("SARVAM_STT_MODEL", "saaras:v3")
 STT_URL = "https://api.sarvam.ai/speech-to-text"
@@ -50,7 +51,7 @@ _ATTEMPTS = [
 
 
 def stt_available() -> bool:
-    return bool(SARVAM_API_KEY)
+    return sarvam_keys.available()
 
 
 STREAM_STT = _clean("STREAM_STT", "0").lower() not in ("0", "false", "no", "off")
@@ -58,7 +59,7 @@ STREAM_STT = _clean("STREAM_STT", "0").lower() not in ("0", "false", "no", "off"
 
 def stream_available() -> bool:
     """True when a turn can be transcribed over the socket instead of the batch POST."""
-    return bool(SARVAM_API_KEY and websockets and STREAM_STT)
+    return bool(sarvam_keys.available() and websockets and STREAM_STT)
 
 
 # Sarvam's language_code → our internal language name. Used for TRUE mid-call language
@@ -97,29 +98,44 @@ async def transcribe(wav_bytes: bytes, language_code: str = "en-IN") -> tuple[st
     `language_code` biases recognition to the right script — Saaras code-mix still understands
     English mixed in. The detected code comes back so the caller can act on a real switch.
     """
-    if not SARVAM_API_KEY:
-        raise RuntimeError("SARVAM_API_KEY not set")
+    if not sarvam_keys.available():
+        raise RuntimeError("No Sarvam API key set")
 
-    headers = {"api-subscription-key": SARVAM_API_KEY}
     last_err = None
     client = _http.client()
-    for attempt in _ATTEMPTS:
-        files = {"file": ("turn.wav", wav_bytes, "audio/wav")}
-        data = {"model": attempt["model"], "language_code": language_code, **attempt["extra"]}
-        try:
-            resp = await client.post(STT_URL, headers=headers, files=files, data=data, timeout=30)
-            if resp.status_code >= 400:
-                last_err = f"Sarvam STT {resp.status_code} ({attempt['model']}): {resp.text[:300]}"
-                continue
-            j = resp.json()
+    # Keys OUTSIDE models, deliberately: a spent key fails identically on every model, so
+    # walking the models first would burn two requests proving the same thing.
+    for _ in range(max(1, sarvam_keys.count())):
+        key = sarvam_keys.current()
+        headers = {"api-subscription-key": key}
+        rotated = False
+        for attempt in _ATTEMPTS:
+            files = {"file": ("turn.wav", wav_bytes, "audio/wav")}
+            data = {"model": attempt["model"], "language_code": language_code, **attempt["extra"]}
             try:
-                conf = float(j.get("language_probability") or 0.0)
-            except (TypeError, ValueError):
-                conf = 0.0
-            return (j.get("transcript") or "").strip(), (j.get("language_code") or ""), conf
-        except Exception as e:  # network / parse — try the next attempt
-            last_err = f"{type(e).__name__}: {e}"
-            continue
+                resp = await client.post(STT_URL, headers=headers, files=files, data=data,
+                                         timeout=30)
+                if resp.status_code >= 400:
+                    last_err = (f"Sarvam STT {resp.status_code} ({attempt['model']}): "
+                                f"{resp.text[:300]}")
+                    if sarvam_keys.should_rotate(resp.status_code):
+                        sarvam_keys.mark_bad(key, resp.status_code)
+                        rotated = True
+                        break               # this key is spent — every model will say the same
+                    continue
+                j = resp.json()
+                try:
+                    conf = float(j.get("language_probability") or 0.0)
+                except (TypeError, ValueError):
+                    conf = 0.0
+                sarvam_keys.mark_ok(key)
+                return ((j.get("transcript") or "").strip(),
+                        (j.get("language_code") or ""), conf)
+            except Exception as e:  # network / parse — try the next attempt
+                last_err = f"{type(e).__name__}: {e}"
+                continue
+        if not rotated:
+            break                            # models exhausted for a reason that is not the key
     raise RuntimeError(last_err or "Sarvam STT failed")
 
 
@@ -204,6 +220,7 @@ class SarvamStream:
         self._opening: asyncio.Task | None = None
         self._reader: asyncio.Task | None = None
         self._parts: list[str] = []
+        self._key = ""
         self._err = ""
 
     def usable(self) -> bool:
@@ -217,7 +234,8 @@ class SarvamStream:
 
     async def _open(self) -> None:
         url = _WS_URL.format(model=SARVAM_STT_MODEL, lang=self.lang)
-        hdrs = {"Api-Subscription-Key": SARVAM_API_KEY}
+        self._key = sarvam_keys.current()
+        hdrs = {"Api-Subscription-Key": self._key}
         try:
             try:
                 conn = websockets.connect(url, additional_headers=hdrs, max_size=None)
@@ -225,7 +243,11 @@ class SarvamStream:
                 conn = websockets.connect(url, extra_headers=hdrs, max_size=None)
             self._ws = await asyncio.wait_for(conn, timeout=6)
         except Exception as exc:
+            # A rejected upgrade carries the HTTP status — retire a spent key here too, so the
+            # batch fallback below and the next turn start on a different one.
             code = getattr(getattr(exc, "response", None), "status_code", 0) or 0
+            if code and sarvam_keys.should_rotate(code):
+                sarvam_keys.mark_bad(self._key, code)
             self._ws, self._err = None, f"{type(exc).__name__} {code or ''}".strip()
             return
         self._reader = asyncio.ensure_future(self._read())
@@ -328,6 +350,8 @@ class SarvamStream:
             if (loop.time() - last_change) >= self.QUIET_GAP:
                 break
         await self._shut()
+        if self._parts:
+            sarvam_keys.mark_ok(self._key)
         return join_segments(self._parts)
 
     async def cancel(self) -> None:
