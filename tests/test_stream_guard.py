@@ -32,7 +32,7 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from services.llm import _ClauseGate, _next_clause  # noqa: E402
+from services.llm import _SPEECH_WORD_CEILING, _ClauseGate, _next_clause  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -145,11 +145,20 @@ eq(gate.aborted, False, "…without tripping the guard")
 # ── the word ceiling ─────────────────────────────────────────────────────────
 # A runaway that passes the shape checks must still be stopped, so a dump can never be read out
 # in full even if it happens to look like prose.
-runaway = " ".join(["The quick brown fox jumps over the lazy dog again and again."] * 12)
+runaway = " ".join(["The quick brown fox jumps over the lazy dog again and again."] * 20)
 said, gate = run(runaway)
 eq(gate.aborted, True, "a runaway reply is cut off at the word ceiling")
-eq(len(said.split()) <= 60, True,
-   f"…having leaked at most a bounded amount (leaked {len(said.split())} words)")
+# Tied to the constant, not to a literal: the ceiling moved 45 -> 90 because 45 was deleting
+# legitimate read-backs and the two-sentence answers Rule #2 grants for an objection. The
+# guarantee that matters is that it is BOUNDED — the leak cannot exceed the ceiling plus the
+# clause that crossed it, because the check runs per clause rather than per word.
+leaked = len(said.split())
+eq(leaked <= _SPEECH_WORD_CEILING + 30, True,
+   f"…having leaked a bounded amount: {leaked} words against a {_SPEECH_WORD_CEILING} ceiling")
+# And length is only the BACKSTOP. The failure this guard actually exists for — a chain-of-
+# thought dump — is caught by SHAPE within the first 60 characters, long before the ceiling
+# matters; the captured real one was ~380 words and never got a single word out (above).
+eq(leaked < 380, True, "the captured real leak would never have reached this path")
 
 # ── an empty tool list must not disable the detector's other arms ────────────
 said, gate = run(CAPTURED_COT, allowed={})

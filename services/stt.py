@@ -307,12 +307,36 @@ class SarvamStream:
     # hard deadline. At 2.5s a dropped "yes, that's right" cost 2574ms and THEN fell back to a
     # 266ms batch call — twenty times slower than not streaming at all. 300ms is ~19x the
     # observed arrival time, so it is generous against jitter while capping the loss.
-    FIRST_WAIT = 0.30
+    # 450, not 300. The window has to survive Singapore->India round-trip jitter now that this
+    # runs on Render rather than a laptop next to the router; 450ms is still ~28x the observed
+    # 16ms arrival, and it only ever costs anything on a turn that was going to miss anyway.
+    FIRST_WAIT = 0.45
     QUIET_GAP = 0.10
+    # The handshake gets its OWN budget, separate from the segment window. See finish().
+    CONNECT_GRACE = 0.25
 
     async def finish(self, timeout: float = 2.5) -> str:
         """Flush, collect every remaining segment, and return the stitched transcript ("" on
         failure, which means: fall back to the batch call)."""
+        loop = asyncio.get_event_loop()
+        # THE HANDSHAKE MUST NOT EAT THE SEGMENT WINDOW. This used to `await self._ready()`
+        # unconditionally and only then start the FIRST_WAIT timer. On Render that produced
+        #
+        #     [timing/ws] stt-stream 691ms | MISS -> batch
+        #
+        # on 4 of 7 turns: the socket had not finished connecting when the caller stopped, the
+        # whole window went on waiting to connect, it gave up with nothing, and the turn paid
+        # for the batch call on top. A connection that has not landed by now is not going to
+        # help THIS turn — give it a short grace, then abandon it and let batch have the turn
+        # cleanly rather than paying twice.
+        if self._opening is not None and not self._opening.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self._opening), timeout=self.CONNECT_GRACE)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        if self._opening is not None and not self._opening.done():
+            await self.cancel()
+            return ""                         # still connecting — batch, and only batch
         await self._ready()
         if not (self.ok and self._ws):
             await self._shut()
@@ -321,7 +345,6 @@ class SarvamStream:
             await self._ws.send(json.dumps({"type": "flush"}))
         except Exception:
             self.ok = False
-        loop = asyncio.get_event_loop()
         t0 = loop.time()
         hard_deadline = t0 + timeout
         # A DEAD socket must not be waited on at all.

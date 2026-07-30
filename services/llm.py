@@ -222,6 +222,22 @@ async def _generate(contents: list, scenario: str, lang: str,
     last_hedged = False
     now = time.time()
     all_cooling = all(_cooldown.get(i, 0) > now for i in range(len(_KEYS)))
+    # The streaming twin has had a whole-turn backstop since the deadline fix; this path had
+    # none, and walked all 104 keys across BOTH passes however long that took — measured at 67s
+    # against a throttled pool. Guarding the transport error above made that worse, because the
+    # walk now survives failures it used to die on. A caller will not hold for a minute: bound
+    # the walk, then let the error path speak. Same budget as the stream, same reason.
+    hard_deadline = time.monotonic() + _TURN_GIVEUP_MS / 1000
+
+    def _key_timeout() -> float:
+        """How long ONE key may hold this turn.
+
+        The shared client reads for 12s and the whole-turn budget is also 12s, so a single
+        stalled key consumed the entire walk and it gave up having tried exactly one key of
+        104 — the original deadline bug reproduced on this path, by its own defaults rather
+        than by an off-by-one. A per-key budget must sit well UNDER the turn budget or the walk
+        cannot walk. Clamped to what is actually left, so the last key never overruns the turn."""
+        return max(0.5, min(_TTFT_GIVEUP_MS / 1000, hard_deadline - time.monotonic()))
 
     def _body_for(key_idx: int) -> tuple[str, dict]:
         model = _model_for_key_idx(key_idx)
@@ -255,7 +271,8 @@ async def _generate(contents: list, scenario: str, lang: str,
         if len(picks) >= 2:
             async def _race_one(key_idx: int, model: str, body: dict):
                 resp = await client.post(_URL.format(model=model),
-                                         params={"key": _KEYS[key_idx]}, json=body)
+                                         params={"key": _KEYS[key_idx]}, json=body,
+                                         timeout=_key_timeout())
                 return key_idx, model, resp
 
             primary = asyncio.ensure_future(_race_one(*picks[0]))
@@ -303,14 +320,33 @@ async def _generate(contents: list, scenario: str, lang: str,
             if len(order) > 1:
                 cur = (cur + 1) % len(order)
             for _ in range(len(order)):
+                if (time.monotonic() >= hard_deadline
+                        or last_attempt_count >= _MAX_KEYS_PER_TURN):
+                    break
                 key_idx = order[cur]
                 if respect_cooldowns and _cooldown.get(key_idx, 0) > time.time():
                     cur = (cur + 1) % len(order)
                     continue
                 model, body = _body_for(key_idx)
                 last_attempt_count += 1
-                resp = await client.post(_URL.format(model=model),
-                                         params={"key": _KEYS[key_idx]}, json=body)
+                # A TRANSPORT failure is not a reason to abandon 103 other keys. Unguarded, one
+                # ReadTimeout here raised straight out of the walk and main.py turned it into
+                # "Sorry, the line broke for a second" — an apology for a socket, on a pool that
+                # was otherwise healthy. Caught on replay. Treat it exactly like a 5xx: note it,
+                # cool the key briefly, move on. The hedged path above already does this via its
+                # `except Exception: continue`; the sequential walk was the one way out.
+                try:
+                    resp = await client.post(_URL.format(model=model),
+                                             params={"key": _KEYS[key_idx]}, json=body,
+                                             timeout=_key_timeout())
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    last_err = f"Gemini transport (key {key_idx + 1}, {model}): " \
+                               f"{type(exc).__name__}: {str(exc)[:120]}"
+                    _cooldown[key_idx] = time.time() + 15
+                    cur = (cur + 1) % len(order)
+                    continue
                 if order is _FRESH_ORDER:
                     _fresh_idx = cur
                 else:
@@ -347,7 +383,13 @@ STREAM_LLM = _clean("STREAM_LLM", "0").lower() not in ("0", "false", "no", "off"
 # turn; 1800 was measured and reverted because escalating that eagerly burns keys per minute and
 # on a rate-limited pool the extra 429s made p50 WORSE. Healthy first-token here is ~1.25-1.5s.
 _TTFT_STALL_MS = _int_env("GEMINI_TTFT_STALL_MS", 2500)
+# How long ONE key gets to produce a first token before the walk moves on. Not a turn budget —
+# see the note where it is used.
 _TTFT_GIVEUP_MS = _int_env("GEMINI_TTFT_GIVEUP_MS", 4500)
+# The whole-turn backstop. Generous on purpose: it exists so a pathological turn ends, not to
+# ration a healthy one. Anything under ~10s here starts cutting off turns that would have
+# succeeded, which is the bug this replaced.
+_TURN_GIVEUP_MS = _int_env("GEMINI_TURN_GIVEUP_MS", 12000)
 _MAX_RACE = _int_env("GEMINI_MAX_RACE", 2)
 # Concurrency while REPLACING REJECTED keys, not while speculating. At 3 the p50 went
 # 2501ms -> 7483ms upstream; 1 keeps a 429 cascade moving without becoming a burst.
@@ -437,18 +479,40 @@ async def _generate_stream(contents: list, scenario: str, lang: str,
         hot = hot[_fresh_idx:] + hot[:_fresh_idx]
     order = (hot + cold) or list(range(len(_KEYS)))
 
-    turn_deadline = time.monotonic() + _TTFT_GIVEUP_MS / 1000
+    # TWO deadlines, and conflating them was a real production bug.
+    #
+    # `_TTFT_GIVEUP_MS` reads like a per-key timeout and was being used as a budget for the
+    # ENTIRE key walk — computed once, out here, never reset. MEASURED on the live deployment:
+    #
+    #   [llm-fail] RuntimeError: All Gemini keys exhausted (stream) — quota/invalid
+    #   llm 4501 (x2 )     <- gave up at exactly 4500ms having tried 2 keys OUT OF 104
+    #   llm 4510 (x3 )     <- and again, 3 keys of 104
+    #
+    # Two slow or 503-ing keys consumed the whole allowance and the turn died, while healthy
+    # turns in the same minute served in 1463ms. The caller heard "Sorry, the line broke for a
+    # second" — an apology for a wall we built, not for anything they said.
+    #
+    # So: `attempt_deadline` bounds ONE key's chance to produce a first token, and
+    # `_MAX_KEYS_PER_TURN` bounds the walk, which is what it was always for. `hard_deadline` is
+    # only a backstop against a pathological turn running forever.
+    hard_deadline = time.monotonic() + _TURN_GIVEUP_MS / 1000
     for attempt, primary in enumerate(order):
-        if time.monotonic() >= turn_deadline or last_attempt_count >= _MAX_KEYS_PER_TURN:
+        if time.monotonic() >= hard_deadline or last_attempt_count >= _MAX_KEYS_PER_TURN:
             break
+        turn_deadline = min(hard_deadline, time.monotonic() + _TTFT_GIVEUP_MS / 1000)
         q: asyncio.Queue = asyncio.Queue()
         tasks: dict[int, asyncio.Task] = {}
         meta: dict[int, tuple[int, str]] = {}
+        # Keys launched that have not yet said ANYTHING — not a chunk, not an error, not a
+        # close. These are the only ones worth cooling in the `finally` below; a key that
+        # answered, or that failed with a status, is already handled on its own terms.
+        _silent: set[int] = set()
         winner = None
 
         def _launch(key_idx: int, tag: int) -> None:
             model, body = _body_for(key_idx)
             meta[tag] = (key_idx, model)
+            _silent.add(key_idx)
             tasks[tag] = asyncio.ensure_future(_sse_pump(key_idx, model, body, q, tag))
 
         try:
@@ -487,6 +551,7 @@ async def _generate_stream(contents: list, scenario: str, lang: str,
                     last_attempt_count += 1
                     next_deadline = time.monotonic() + _TTFT_STALL_MS / 1000
                     continue
+                _silent.discard(meta[tag][0])          # it spoke — it is not stalling
                 if kind == "chunk":
                     winner, first_chunk = tag, payload
                     break
@@ -568,12 +633,19 @@ async def _generate_stream(contents: list, scenario: str, lang: str,
             for t in tasks.values():
                 if not t.done():
                     t.cancel()
-            # A key that never produced a first token is stalling even though it never returned
-            # a status worth rotating on. Cool it too, or the next turn picks the same throttled
-            # keys straight away — measured upstream: four consecutive turns timing out on the
-            # same five keys while the other 99 sat idle and healthy.
+            # A key that never produced a first token IS stalling, even without a status worth
+            # rotating on — cool it, or the next turn picks the same throttled keys straight
+            # away (measured upstream: four consecutive turns timing out on the same five keys
+            # while the other 99 sat idle and healthy).
+            #
+            # But ONLY those. This used to cool every key the block touched, `tag != winner`,
+            # which swept up the losers of a race the winner had already won in ~1.4s — keys
+            # that are perfectly healthy and were merely second. On a turn that failed outright
+            # there is no winner at all, so EVERY key it touched got a 20s ban, and the next
+            # turn started with a smaller pool, failed faster, and banned more. That compounding
+            # is what turned one slow moment into "the line broke" over and over.
             for tag, (k, _m) in meta.items():
-                if tag != winner:
+                if tag != winner and k in _silent:
                     _cooldown[k] = max(_cooldown.get(k, 0), time.time() + 20)
 
     raise RuntimeError("All Gemini keys exhausted (stream) — " + (last_err or "quota/invalid"))
@@ -682,7 +754,14 @@ _NOT_SPEECH = re.compile(
     r"```|print\s*\(|\bRule\s*#|System note|HARD CAP|maxOutputTokens|json\b)",
     re.IGNORECASE,
 )
-_SPEECH_WORD_CEILING = 45          # ~4x the prompt's own cap: generous, still catches a dump
+# 45 was "~4x the prompt's own cap", which sounded generous and was not. Rule #2 explicitly
+# authorises a read-back — an order with its total, a phone number digit by digit — and those
+# clear 45 words easily, especially in Hindi and Telugu where the same content takes more of
+# them. It now also has to allow the two-sentence answer Rule #2 grants for a question or an
+# objection. At 45 this guard deletes exactly the substantive replies the agent is supposed to
+# give, and speaks an apology instead. 90 still catches the failure it exists for: the captured
+# chain-of-thought leak was ~380 words.
+_SPEECH_WORD_CEILING = 90
 _SYMBOL_CHARS = set('{}[]()<>"`\\|_=*')
 
 
@@ -700,13 +779,21 @@ def _looks_like_speech(t: str) -> bool:
 
 def _speak_or_fallback(own: str, tool: str | None, lang: str) -> str:
     """The model's own line when it is genuinely speech (it answers whatever the caller just
-    asked, which a canned line cannot), the canned confirmation otherwise."""
+    asked, which a canned line cannot), the canned confirmation otherwise.
+
+    NOTE the empty case is logged separately. An empty completion is a TRANSPORT failure — the
+    stream carried no text part at all — not a comprehension failure, and telling the caller
+    "could you say that again?" blames them for it. It also used to be completely invisible:
+    the `if own:` guard below meant the only silent path through this function was the one
+    worth knowing about."""
     own = _strip_text_function_call(re.sub(r"\(System[^)]*\)", "", own or ""))
     own = re.sub(r"\s*\n+\s*", " ", own).strip()      # one spoken line, never split
     if _looks_like_speech(own):
         return own
     if own:
         print(f"[llm] suppressed a non-speech reply ({len(own.split())} words): {own[:90]!r}")
+    else:
+        print("[llm] empty completion — the model returned no text part")
     return fallback_line(tool, lang) if tool else _reask(lang)
 
 
@@ -958,6 +1045,7 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
     # function calling on those turns so the outcome is ALWAYS recorded, even on a call
     # where nobody ever spoke.
     force_tool = "(System note" in (user_text or "") and "CALL " in (user_text or "")
+    retried_empty = False           # an empty completion buys exactly one extra attempt
 
     # Every tool this scenario may call, by name -> parameter schema. The gate needs it so a
     # function call written as prose is recognised by NAME, which is what stops ordinary text
@@ -1074,11 +1162,41 @@ async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: 
             last_tool, last_args = name, args
             contents.append({"role": "user", "parts": [{"functionResponse": {
                 "name": name, "response": {"status": "success", "id": row.get("id")}}}]})
+
+            # …but the shortcut is only worth taking when there IS own text. A model that emits
+            # nothing but the call leaves nothing to prefer, and the canned confirmation is
+            # blind to what was just said — caught on replay, where "just send me an email
+            # instead" was answered with "our strategist will call you shortly". Spend the
+            # second call to get a real line; the functionResponse is already in hand, so the
+            # model answers them properly. Once only, so a mute model still terminates.
+            if not "".join(text_chunks).strip() and not retried_empty:
+                retried_empty = True
+                print(f"[llm] {name} fired with no spoken line — asking for one")
+                continue
+
             spoken = _spoken("".join(text_chunks), name)
             contents.append({"role": "model", "parts": [{"text": spoken}]})
             return spoken
 
-        return _spoken("".join(text_chunks), last_tool)
+        own = "".join(text_chunks)
+        # An EMPTY completion is worth one more try. The stream carried no text part at all —
+        # that is a transport hiccup, and answering it with "could you say that again?" blames
+        # the caller for our problem and teaches them nothing. Retry once, then give up.
+        if not own.strip() and not retried_empty:
+            retried_empty = True
+            print("[llm] empty completion — retrying once before falling back")
+            continue
+
+        spoken = _spoken(own, last_tool)
+        # RECORD WHAT THE CALLER ACTUALLY HEARD. The model's raw parts went into `contents`
+        # above, but when _spoken() substitutes something else — a suppressed reply, a canned
+        # fallback — history keeps the version nobody heard. The model then believes it already
+        # covered ground the caller never got, and answers a question they were never asked.
+        # That divergence is what "it isn't taking my input properly" feels like from the other
+        # end of the line. The write-tool path above has always done this; this one did not.
+        if spoken and norm_spoken(spoken) != norm_spoken(own):
+            contents.append({"role": "model", "parts": [{"text": spoken}]})
+        return spoken
 
     return _reask(lang)
 
