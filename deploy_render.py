@@ -61,6 +61,13 @@ if not KEY:
 H = {"Authorization": f"Bearer {KEY}", "Accept": "application/json"}
 
 
+# Credentials that deploy the service must never be shipped INTO it. RENDER_API_KEY lives in
+# .env because this script reads it from the environment, but the running app has no use for it
+# and it grants full account access — including the power to redeploy or delete this service.
+# Anything that can read the app's environment should not inherit that.
+_DEPLOY_ONLY = {"RENDER_API_KEY", "VERCEL_TOKEN", "GITHUB_TOKEN"}
+
+
 def read_env() -> list[dict]:
     """Every KEY=VALUE in .env, as Render's envVars payload. Values are never logged."""
     path = ROOT / ".env"
@@ -73,7 +80,7 @@ def read_env() -> list[dict]:
             continue
         k, v = line.split("=", 1)
         k, v = k.strip(), v.strip().strip('"').strip("'")
-        if not k or not v or k in seen:
+        if not k or not v or k in seen or k in _DEPLOY_ONLY:
             continue
         seen.add(k)
         out.append({"key": k, "value": v})
