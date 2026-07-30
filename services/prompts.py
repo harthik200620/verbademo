@@ -48,38 +48,82 @@ def _fmt(s: str, ctx: dict) -> str:
 # number deterministically on the way to TTS, so a model that ignores this still
 # cannot reach the voice with bare digits.
 # ─────────────────────────────────────────────────────────────────────────────
+# Every language covers the SAME eight topics, in the same order, and test_language_parity.py
+# asserts it by those headings. They drifted badly: only English said times are 12-hour and
+# reference codes are read letter-by-letter; only Hindi and Telugu said place names go in native
+# script; Telugu had no time rule at all.
+#
+# REGISTER is new, and it is the one the complaint was actually about — "talks like normal
+# people, not deep Telugu". It needs OPPOSITE treatment in the two languages, which is why a
+# single shared sentence would have been useless:
+#
+#   HINDI's failure mode is Sanskritised VOCABULARY — कृपया, यथाशीघ्र, दिनांक, उपलब्ध. The fix is
+#   word substitution, and the file already had the beginnings of one.
+#   TELUGU's failure mode is GRAMMAR, not vocabulary. Hyderabad Telugu is heavily code-mixed and
+#   that is correct, natural speech; what makes it sound like a textbook is గ్రాంథికం — the
+#   literary verb endings and plurals (చేయుము, ఉన్నది, అగును, ధన్యవాదములు). Substituting native
+#   words for the loanwords would push it FURTHER from how people speak, not closer. So Telugu
+#   keeps its loanword list and gets a register rule about verb forms instead.
 _NUM_GUIDE = {
     "english": (
-        "Speak numbers naturally in English. Amounts: the number then 'rupees' (₹8,400 → "
-        "'eight thousand four hundred rupees'), Indian units — lakh and crore, never million. "
-        "Times in 12-hour form ('four in the afternoon', 'half past six'). Dates as day then "
-        "month ('twenty eighth July'), never the year. Phone numbers and order numbers digit "
-        "by digit. Reference codes letter by letter then digit by digit (SF-4521 → 'S-F, four "
-        "five two one'). Never say the '₹' symbol and never leave bare digits in a reply."
+        "SCRIPT: English, and Indian names exactly as they are written.\n"
+        # The corporate-filler ban is _LANG_RULE's, not this block's. All this line owns is the
+        # Indian-English officialese that rule does not name.
+        "REGISTER: everyday spoken English, never written officialese — no 'do the needful', "
+        "'revert', 'the same', 'prepone'.\n"
+        "Amounts: the number then 'rupees' (₹8,400 → 'eight thousand four hundred rupees'), "
+        "Indian units — lakh and crore, never million.\n"
+        "Dates as day then month ('twenty eighth July'), never the year.\n"
+        "Times in 12-hour form ('four in the afternoon', 'half past six').\n"
+        "Phone numbers and order numbers digit by digit.\n"
+        "Reference codes letter by letter then digit by digit (SF-4521 → 'S-F, four five two "
+        "one').\n"
+        "PLACE NAMES and people's names said as they are, never spelled out and never "
+        "anglicised — Kukatpally, Jubilee Hills, Arjun, Sneha.\n"
+        "Never say the '₹' symbol and never leave bare digits in a reply."
     ),
     "hindi": (
-        "Reply in natural spoken Hindi, everyday Hyderabad/Delhi style. WRITE EVERY WORD IN "
-        "DEVANAGARI SCRIPT, and PREFER the natural Hindi word over an English one whenever one "
-        "exists — the voice speaks real Hindi words far more clearly than transliterated "
-        "English. USE THESE HINDI WORDS: किश्त (instalment), भुगतान (payment), दुकान (shop), "
-        "जाँच (check), सलाह (advice), समय (time), तारीख़ (date), कीमत (price), छूट (discount), "
-        "पता (address). ONLY these English words may be code-mixed (they read cleanly and are "
-        "genuinely said this way), all in Devanagari: लिंक, व्हाट्सऐप, नंबर, कन्फर्म, ऑनलाइन, "
-        "वेबसाइट, ऑर्डर, बुकिंग, ई-एम-आई. NEVER output a single word in Latin/English letters — "
-        "Latin text is mispronounced by the voice. Amounts in Hindi words + 'रुपये' (₹8,400 → "
-        "'आठ हज़ार चार सौ रुपये'). Dates like 'अट्ठाईस जुलाई'. Times like 'शाम साढ़े छह बजे'. "
-        "Phone numbers digit by digit. Always respectful ('जी', 'आप'). PLACE NAMES and Indian "
-        "proper nouns in Devanagari too (हैदराबाद, कोंडापुर, कूकटपल्ली)."
+        "SCRIPT: WRITE EVERY WORD IN DEVANAGARI. NEVER output a single word in Latin letters — "
+        "Latin text is mispronounced by the voice.\n"
+        "REGISTER: everyday spoken Hindi, the way people actually talk in Hyderabad and Delhi — "
+        "NEVER bookish or Sanskritised Hindi. Say बता दीजिए not कृपया बताइए, जल्दी not "
+        "यथाशीघ्र, तारीख़ not दिनांक, रकम not धनराशि, मिल जाएगा not उपलब्ध है, ज़रूरी not आवश्यक, "
+        "इंतज़ार not प्रतीक्षा, बता दूँगी not सूचित करूँगी. PREFER the natural Hindi word over an "
+        "English one whenever one exists: किश्त (instalment), भुगतान (payment), दुकान (shop), "
+        "जाँच (check), सलाह (advice), समय (time), कीमत (price), छूट (discount), पता (address). "
+        "ONLY these English words may be code-mixed, all in Devanagari: लिंक, व्हाट्सऐप, नंबर, "
+        "कन्फर्म, ऑनलाइन, वेबसाइट, ऑर्डर, बुकिंग, ई-एम-आई. Always respectful ('जी', 'आप').\n"
+        "Amounts in Hindi words + 'रुपये' (₹8,400 → 'आठ हज़ार चार सौ रुपये').\n"
+        "Dates like 'अट्ठाईस जुलाई' — day then month, never the year.\n"
+        "Times like 'शाम साढ़े छह बजे', 'दोपहर चार बजे'.\n"
+        "Phone numbers digit by digit.\n"
+        "Reference codes letter by letter then digit by digit (SF-4521 → 'एस-एफ़, चार पाँच दो "
+        "एक').\n"
+        "PLACE NAMES and Indian proper nouns in Devanagari too (हैदराबाद, कोंडापुर, कूकटपल्ली, "
+        "जुबली हिल्स)."
     ),
     "telugu": (
-        "Reply in natural spoken Telugu, everyday Hyderabad style. WRITE EVERY WORD IN TELUGU "
-        "SCRIPT, including English loanwords, which you must transliterate so the voice speaks "
-        "them naturally: అపాయింట్‌మెంట్, స్లాట్, పేమెంట్, వాట్సాప్, నంబర్, లింక్, బడ్జెట్, "
-        "కన్ఫర్మ్, ఆర్డర్, బుకింగ్, ఆన్‌లైన్, వెబ్‌సైట్. NEVER output a single word in "
-        "Latin/English letters — Latin text is mispronounced by the voice. Amounts in Telugu "
-        "words + 'రూపాయలు' (₹8,400 → 'ఎనిమిది వేల నాలుగు వందల రూపాయలు'). Dates like "
-        "'ఇరవై ఎనిమిది జూలై'. Use 'అండి / గారు'. Phone numbers digit by digit. PLACE NAMES and "
-        "Indian proper nouns in Telugu script too (హైదరాబాద్, కొండాపూర్, కూకట్‌పల్లి)."
+        "SCRIPT: WRITE EVERY WORD IN TELUGU SCRIPT, including English loanwords, which you must "
+        "transliterate so the voice speaks them naturally: అపాయింట్‌మెంట్, స్లాట్, పేమెంట్, "
+        "వాట్సాప్, నంబర్, లింక్, బడ్జెట్, కన్ఫర్మ్, ఆర్డర్, బుకింగ్, ఆన్‌లైన్, వెబ్‌సైట్. NEVER "
+        "output a single word in Latin letters — Latin text is mispronounced by the voice.\n"
+        "REGISTER: వ్యావహారికం — everyday spoken Hyderabad Telugu, the way people actually talk. "
+        "NEVER గ్రాంథికం, the literary written form: it is the single thing that makes this "
+        "sound like a textbook instead of a person. Say చెప్పండి not చెప్పుము, ఉంది not ఉన్నది, "
+        "అవుతుంది not అగును, కావాలి not కావలెను, వస్తున్నాను not వచ్చుచున్నాను, ధన్యవాదాలు not "
+        "ధన్యవాదములు, ఇల్లు not గృహము, డబ్బు not ధనము. The everyday English loanwords above are "
+        "GOOD Telugu speech — keep them; it is the verb endings and the -ములు plurals that make "
+        "it sound bookish, not the borrowed words. Use 'అండి / గారు'.\n"
+        "Amounts in Telugu words + 'రూపాయలు' (₹8,400 → 'ఎనిమిది వేల నాలుగు వందల రూపాయలు').\n"
+        "Dates MONTH FIRST, then the day as an ordinal — 'జూలై ఇరవై ఎనిమిదో తేదీ', never the "
+        "year. Day-first is English word order and it sounds translated.\n"
+        "Times in 12-hour form with the part of day — 'సాయంత్రం ఆరున్నర', 'మధ్యాహ్నం నాలుగు "
+        "గంటలకు'.\n"
+        "Phone numbers digit by digit.\n"
+        "Reference codes letter by letter then digit by digit (SF-4521 → 'ఎస్-ఎఫ్, నాలుగు ఐదు "
+        "రెండు ఒకటి').\n"
+        "PLACE NAMES and Indian proper nouns in Telugu script too (హైదరాబాద్, కొండాపూర్, "
+        "కూకట్‌పల్లి, జూబ్లీ హిల్స్)."
     ),
 }
 
@@ -361,8 +405,11 @@ OPENERS = {
     "feedback": {
         "english": "Hi, this is Kavita from Sunrise Diagnostics — is that Mr Ramesh? Just one "
                    "quick question about your visit, under a minute.",
+        # "बस एक मिनट" is not decoration: feedback's flow tells the model its opener promised
+        # the call takes under a minute. English and Telugu said so; Hindi did not, so on a
+        # Hindi call the model was defending a promise it had never made.
         "hindi": "नमस्ते जी, मैं कविता बोल रही हूँ, सनराइज़ डायग्नोस्टिक्स से — रमेश जी? आपकी "
-                 "पिछली जाँच के बारे में बस एक छोटा सा सवाल है।",
+                 "पिछली जाँच के बारे में बस एक छोटा सा सवाल है, एक मिनट भी नहीं लगेगा।",
         "telugu": "నమస్తే అండి, నేను కవిత, సన్‌రైజ్ డయాగ్నోస్టిక్స్ నుంచి — రమేష్ గారేనా? మీ "
                   "టెస్ట్ గురించి ఒక చిన్న ప్రశ్న, ఒక్క నిమిషం.",
     },
@@ -477,10 +524,16 @@ def _num_guide_for(sc: dict, lang: str) -> str:
     backwards: nobody types "eight thousand four hundred rupees", and the chat scenario was
     getting the speech rules verbatim."""
     if sc.get("chat"):
-        return ("HOW YOU WRITE NUMBERS — this is TEXT, so write them the way people type:\n"
-                "₹35,000 and 9 am and 3-4 months as digits, never spelled out. Keep the ₹ "
-                "symbol. Reply in the same script the {lname} above names, but numerals stay "
-                "numerals.").replace("{lname}", LANG_NAME[lang])
+        # SCRIPT and REGISTER still apply — a WhatsApp thread in Hindi is still Hindi, and a
+        # Telugu one still must not read like a textbook. Only the NUMBERS invert. This block
+        # used to be English-only with no script or register guidance in any language, so the
+        # chat scenario was the one place the language rules simply did not reach.
+        return ("HOW YOU WRITE NUMBERS AND WORDS — this is TEXT, not speech:\n"
+                "₹35,000 and 9 am and 3-4 months as DIGITS, never spelled out. Keep the ₹ "
+                "symbol. Phone numbers, order numbers and reference codes as written — 9845012345, "
+                "NV-10234 — never digit by digit; nobody types it that way.\n"
+                + "\n".join(ln for ln in _NUM_GUIDE[lang].split("\n")
+                            if ln.startswith(("SCRIPT:", "REGISTER:"))))
     return "HOW YOU SPEAK NUMBERS AND WORDS:\n" + _NUM_GUIDE[lang]
 
 
@@ -576,21 +629,95 @@ RETRY_LINE = {
     "telugu": "క్షమించండి అండి, లైన్ కట్ అయ్యింది — మరోసారి చెప్పండి?",
 }
 
-# The no-reply ladder. Sent as a user-role note; llm.py forces a tool call on the
-# closing one, because AUTO mode too often speaks the goodbye and skips the tool.
+# ─────────────────────────────────────────────────────────────────────────────
+# THE NO-REPLY LADDER — five rungs, and the same five in every scenario and both directions.
+#
+#   rung 0   they have not spoken at all yet .... HELP_NOTE   say what you can help with
+#            they have spoken before ............ REASK       the pending question, shorter
+#   rung 1   CHECK_NOTE ......................... can you hear me?
+#   rung 2   LAST_NOTE .......................... is now a bad time?
+#   rung 3   _CLOSE_NOTE ........................ close AND record
+#   rung 4   ENDING ............................. TTS only, no model. The backstop.
+#
+# Three follow-ups, then the call is cut. The client owns the timers (3s before rung 0, 2s
+# after that) and the rung count; the WORDS live here, because a sibling build kept them in
+# JavaScript and ended up with a close note naming a tool that no longer existed — silent calls
+# stopped recording and nothing on screen said so.
+#
+# Each rung is a DIFFERENT instruction, not three ways of saying "are you there". The caller
+# hears all three inside about nine seconds; three variations on one question is worse than one.
+#
+# ⚠ NONE of the first four may contain the literal "CALL " (uppercase, trailing space).
+# llm.py forces a tool call on any note containing both "(System note" and "CALL ", so a
+# "still there?" nudge carrying those five characters would record and hang up at rung 1.
+# Only _CLOSE_NOTE may trip it. test_no_reply_ladder.py asserts exactly that, and pins the
+# predicate in llm.py too so a change at either end breaks loudly.
+# ─────────────────────────────────────────────────────────────────────────────
+HELP_NOTE = {
+    "english": "(System note — not from the {who}: the line has been silent since you spoke and "
+               "they have not said one word yet. In ONE very short natural English sentence, say "
+               "what you can help them with — name two or three REAL things from YOUR FACTS, "
+               "never a description of them — then ask what they need. Never greet again, never "
+               "mention this note — reply with ONLY that sentence.)",
+    "hindi": "(System note — not from the {who}: the line has been silent since you spoke and "
+             "they have not said one word yet. In ONE very short natural HINDI sentence, say what "
+             "you can help them with — name two or three REAL things from YOUR FACTS, never a "
+             "description of them — then 'किसमें मदद करूँ?'. Never greet again, never mention "
+             "this note — reply with ONLY that sentence.)",
+    "telugu": "(System note — not from the {who}: the line has been silent since you spoke and "
+              "they have not said one word yet. In ONE very short natural TELUGU sentence, say "
+              "what you can help them with — name two or three REAL things from YOUR FACTS, never "
+              "a description of them — then 'ఏం సహాయం కావాలి అండి?'. Never greet again, never "
+              "mention this note — reply with ONLY that sentence.)",
+}
+
 REASK = {
     "english": "(System note — not from the {who}: the line is silent. In ONE very short "
-               "natural English sentence, check they can hear you — like a real caller would — "
-               "or repeat your pending question in fewer words. Never the same line twice, "
-               "never greet again, never mention this note — reply with ONLY that sentence.)",
+               "natural English sentence, put your pending question again in fewer words — the "
+               "way a real caller would when the other person did not answer. Never the same "
+               "line twice, never greet again, never mention this note — reply with ONLY that "
+               "sentence.)",
     "hindi": "(System note — not from the {who}: the line is silent. In ONE very short natural "
-             "HINDI sentence, check they can hear you — 'सुन पा रहे हैं जी?' — or repeat your "
-             "pending question in fewer words. Never the same line twice, never greet again, "
-             "never mention this note — reply with ONLY that sentence.)",
+             "HINDI sentence, put your pending question again in fewer words — the way a real "
+             "caller would when the other person did not answer. Never the same line twice, "
+             "never greet again, never mention this note — reply with ONLY that sentence.)",
     "telugu": "(System note — not from the {who}: the line is silent. In ONE very short natural "
-              "TELUGU sentence, check they can hear you — 'వినిపిస్తోందా అండి?' — or repeat your "
-              "pending question in fewer words. Never the same line twice, never greet again, "
-              "never mention this note — reply with ONLY that sentence.)",
+              "TELUGU sentence, put your pending question again in fewer words — the way a real "
+              "caller would when the other person did not answer. Never the same line twice, "
+              "never greet again, never mention this note — reply with ONLY that sentence.)",
+}
+
+CHECK_NOTE = {
+    "english": "(System note — not from the {who}: still nothing. In ONE very short natural "
+               "English sentence, check they can hear you — like a real caller would. Do NOT "
+               "repeat your question this time and do NOT end the call. Never the same line "
+               "twice, never mention this note — reply with ONLY that sentence.)",
+    "hindi": "(System note — not from the {who}: still nothing. In ONE very short natural HINDI "
+             "sentence, check they can hear you — 'सुन पा रहे हैं जी?'. Do NOT repeat your "
+             "question this time and do NOT end the call. Never the same line twice, never "
+             "mention this note — reply with ONLY that sentence.)",
+    "telugu": "(System note — not from the {who}: still nothing. In ONE very short natural TELUGU "
+              "sentence, check they can hear you — 'వినిపిస్తోందా అండి?'. Do NOT repeat your "
+              "question this time and do NOT end the call. Never the same line twice, never "
+              "mention this note — reply with ONLY that sentence.)",
+}
+
+LAST_NOTE = {
+    "english": "(System note — not from the {who}: silent a third time, and this is your last "
+               "try before the call ends. In ONE very short natural English sentence, ask warmly "
+               "whether now is a bad time. Do NOT say goodbye and do NOT end the call — that "
+               "happens on the next turn, not this one. Never mention this note — reply with "
+               "ONLY that sentence.)",
+    "hindi": "(System note — not from the {who}: silent a third time, and this is your last try "
+             "before the call ends. In ONE very short natural HINDI sentence, ask warmly whether "
+             "now is a bad time — 'अभी टाइम ठीक नहीं है क्या जी?'. Do NOT say goodbye and do NOT "
+             "end the call — that happens on the next turn, not this one. Never mention this "
+             "note — reply with ONLY that sentence.)",
+    "telugu": "(System note — not from the {who}: silent a third time, and this is your last try "
+              "before the call ends. In ONE very short natural TELUGU sentence, ask warmly "
+              "whether now is a bad time — 'ఇప్పుడు కుదరట్లేదా అండి?'. Do NOT say goodbye and do "
+              "NOT end the call — that happens on the next turn, not this one. Never mention this "
+              "note — reply with ONLY that sentence.)",
 }
 
 _CLOSE_NOTE = {
@@ -659,8 +786,11 @@ def closing_line(lang: str, sid: str = "") -> str:
             per = scenario_of(sid).get("closing") or {}
         except Exception:
             per = {}
-    return (per.get(lang) or per.get("english")
-            or CLOSING.get(lang) or CLOSING["english"])
+    # Fall back WITHIN the language before falling back across it. The old order tried this
+    # scenario's ENGLISH line second, so one missing key would speak English at the end of a
+    # Telugu call — the universal line exists in Telugu and is the better answer every time.
+    return (per.get(lang) or CLOSING.get(lang)
+            or per.get("english") or CLOSING["english"])
 
 
 def with_closing(spoken: str, lang: str, sid: str = "") -> str:
@@ -682,10 +812,30 @@ def with_closing(spoken: str, lang: str, sid: str = "") -> str:
     return f"{s} {tail}"
 
 
-def reask_note(sid: str, lang: str) -> str:
+def _rung(table: dict, sid: str, lang: str) -> str:
+    """One rung of the no-reply ladder, in this call's language and voice."""
     sc = scenario_of(sid)
     who = "customer" if sc["outbound"] else "caller"
-    return REASK[norm_lang(lang, sid)].format(who=who)
+    return table[norm_lang(lang, sid)].format(who=who)
+
+
+def help_note(sid: str, lang: str) -> str:
+    """Rung 0 on a call where they have not spoken YET — so there is no pending question to
+    repeat, only the opener they did not answer. Naming two or three real services is the one
+    move that turns dead air into a conversation."""
+    return _rung(HELP_NOTE, sid, lang)
+
+
+def reask_note(sid: str, lang: str) -> str:
+    return _rung(REASK, sid, lang)
+
+
+def check_note(sid: str, lang: str) -> str:
+    return _rung(CHECK_NOTE, sid, lang)
+
+
+def last_note(sid: str, lang: str) -> str:
+    return _rung(LAST_NOTE, sid, lang)
 
 
 def close_note(sid: str, lang: str) -> str:
@@ -698,7 +848,8 @@ def close_note(sid: str, lang: str) -> str:
 
 
 __all__ = [
-    "ALL_LANGS", "CLOSING", "LANG_NAME", "OPENERS", "REASK", "RETRY_LINE",
-    "build_system_prompt", "close_note", "closing_line", "norm_lang", "opener_for",
+    "ALL_LANGS", "CHECK_NOTE", "CLOSING", "ENDING", "HELP_NOTE", "LANG_NAME", "LAST_NOTE",
+    "OPENERS", "REASK", "RETRY_LINE", "build_system_prompt", "check_note", "close_note",
+    "closing_line", "ending_line", "help_note", "last_note", "norm_lang", "opener_for",
     "reask_note", "scenario_of", "with_closing",
 ]

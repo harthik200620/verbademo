@@ -38,7 +38,8 @@ from fastapi.staticfiles import StaticFiles
 
 import db
 from services import llm, stt, tts
-from services.prompts import RETRY_LINE, close_note, ending_line, norm_lang, opener_for, reask_note
+from services.prompts import (RETRY_LINE, check_note, close_note, ending_line, help_note,
+                              last_note, norm_lang, opener_for, reask_note)
 from services.scenarios import picker, scenario_of
 from services.tools import lookup_order, record_tool_of, to_crm_row, tools_for
 
@@ -130,14 +131,20 @@ async def config():
 
 @app.get("/api/notes")
 async def api_notes(scenario: str = "lead", lang: str = ""):
-    """The no-reply ladder's three lines. The client drives the timers but the WORDS live in
-    prompts.py — duplicating them in JavaScript is how the sibling builds ended up with a
-    close note naming a tool that no longer existed, which silently stopped recording
-    silent calls."""
+    """The no-reply ladder's six lines. The client drives the timers and counts the rungs, but
+    the WORDS live in prompts.py — duplicating them in JavaScript is how the sibling builds
+    ended up with a close note naming a tool that no longer existed, which silently stopped
+    recording silent calls.
+
+    `help` is the one the caller hears first when they say nothing at all: what this agent can
+    actually do for them, named from the scenario's own facts. Everything before it was a
+    variation on "are you there?", which tells a hesitating caller nothing."""
     sid = scenario_of(scenario)["id"]
     lng = norm_lang(lang, sid)
-    return {"reask": reask_note(sid, lng), "close": close_note(sid, lng),
-            "ending": ending_line(lng), "record_tool": record_tool_of(sid)}
+    return {"help": help_note(sid, lng), "reask": reask_note(sid, lng),
+            "check": check_note(sid, lng), "last": last_note(sid, lng),
+            "close": close_note(sid, lng), "ending": ending_line(lng),
+            "record_tool": record_tool_of(sid)}
 
 
 @app.post("/api/login")

@@ -448,14 +448,19 @@ let ws=null, listening=false, waitingForServer=false, playing=false;
 let audioCtx=null, micStream=null, workletNode=null, sourceNode=null;
 let recog=null, pendingAudioMime=null, currentAudio=null, typingEl=null;
 let httpMode=false, httpHistory=[];
-let noReplyTimer=null, noReplyCount=0, endingCall=false, closeRequested=false;
+let noReplyTimer=null, noReplyRung=0, endingCall=false, protectOpener=false;
 let sessionScenario='lead', sessionLang='english', disclose=true;
-let NOTES={reask:'',close:'',ending:''};
+let NOTES={help:'',reask:'',check:'',last:'',close:'',ending:''};
 const adminPw='';
 
 const LANGS={english:{code:'en-IN',label:'English'},hindi:{code:'hi-IN',label:'हिंदी'},
              telugu:{code:'te-IN',label:'తెలుగు'}};
-const NO_REPLY_MS=3000, NO_REPLY_CHAT_MS=8000;
+/* Graduated. The FIRST nudge of a silence waits the full 3s — they may simply be thinking, and
+   cutting in at 2s reads as impatience. Every nudge after that is answering a question they
+   have already let pass once, so it comes faster. Chat keeps its own pair: someone typing is
+   silent for eight seconds without it meaning anything. */
+const NO_REPLY_MS=3000,      NO_REPLY_AGAIN_MS=2000;
+const NO_REPLY_CHAT_MS=8000, NO_REPLY_CHAT_AGAIN_MS=5000;
 const FETCH_TIMEOUT_MS=12000;
 
 function langLabel(){ return (LANGS[sessionLang]||LANGS.english).label; }
@@ -519,8 +524,8 @@ function renderPicker(){
 
 async function choose(s, lang){
   SC=s; sessionScenario=s.id; sessionLang=LANGS[lang]?lang:s.default_lang;
-  openerData=null; openerPromise=null; turnsSent=0; noReplyCount=0;
-  closeRequested=false; endingCall=false; callOpened=false; httpHistory=[];
+  openerData=null; openerPromise=null; turnsSent=0; noReplyRung=0;
+  endingCall=false; callOpened=false; protectOpener=false; httpHistory=[];
   $('scenepick').style.display='none';
   document.body.dataset.scene=s.id;
   $('brandH1').textContent = s.business;
@@ -586,7 +591,7 @@ function renderGoals(vals){
 
 /* ── Edge-case lab ──────────────────────────────────────────────────────── */
 const LAB = [
-  {k:'silence', t:'Say nothing', why:'The line goes quiet. The agent checks twice, then leaves a short message and <b>still records an outcome</b> — a call nobody answers is still data.'},
+  {k:'silence', t:'Say nothing', why:'The line goes quiet. It tells you what it can help with, follows up three times, then leaves a short message and <b>still records an outcome</b> — a call nobody answers is still data.'},
   {k:'gibberish', t:'Talk nonsense', en:'blorf wentle prakkim', hi:'ब्लॉर्फ वेंटल प्रक्किम', te:'బ్లార్ఫ్ వెంటల్ ప్రక్కిమ్',
    why:'One unrecognisable answer must never end a call. It asks you to say it again instead of guessing — the bug that once made an agent hang up because "wheat" was heard as "sweet".'},
   {k:'cutoff', t:'Trail off mid-sentence', en:'yeah so I was thinking about', hi:'हाँ तो मैं सोच रहा था कि', te:'అవును నేను ఆలోచిస్తున్నాను',
@@ -652,9 +657,13 @@ async function init(){
   await loadCrm();
 }
 async function loadNotes(){
+  // Keep the last-known lines when a REFETCH fails. Blanking them turned a 200ms network blip
+  // on a language switch into a hang-up: every rung resolves to an empty string, stepLadder
+  // skips all four, and the next silence goes straight to the backstop.
   try{
-    NOTES = await (await jfetch('/api/notes?scenario='+sessionScenario+'&lang='+sessionLang)).json();
-  }catch(e){ NOTES={reask:'',close:'',ending:''}; }
+    const j = await (await jfetch('/api/notes?scenario='+sessionScenario+'&lang='+sessionLang)).json();
+    if(j && j.ending) NOTES=j;
+  }catch(e){}
 }
 
 /* ── CRM feed ───────────────────────────────────────────────────────────── */
@@ -902,21 +911,68 @@ async function getOpening(){
   return openerPromise;
 }
 
-/* ── No-reply ladder: follow-up → follow-up → close AND record ──────────── */
+/* ── No-reply ladder ──────────────────────────────────────────────────────────
+   FIVE rungs, and the same five in both directions. Rungs 0-3 go through the MODEL, so the
+   nudge is written in this call's language and this call's context rather than read off a
+   card; rung 4 is TTS only, because a backstop that needs the model is not a backstop.
+
+     0  they have not spoken at all yet → NOTES.help   what you can help with, from the facts
+        they have spoken before        → NOTES.reask   the pending question, in fewer words
+     1  NOTES.check   — can you hear me?
+     2  NOTES.last    — is now a bad time? (the last try; it must NOT close)
+     3  NOTES.close   — the model closes AND is forced to call the record tool (llm.py)
+     4  NOTES.ending  — sayFixed(): TTS, no model, then the line is cut
+
+   Three follow-ups, then the call is cut. On the happy path rung 4 is never heard: rung 3's
+   forced tool call writes the CRM row, the server sends call_ended, and afterPlay() hangs up.
+   Rung 4 exists for the turn where rung 3 fails — a timeout, a 429, a tool the model declined
+   to call. Do not "fix the missing goodbye" by removing the hang-up on rung 3; that is the
+   exact bug the call_ended path was written to prevent.
+
+   `noReplyRung` is the ladder's ONLY state. It picks the next line AND the next wait — rung 0
+   gets the full 3s of grace, and after that they have already let one nudge pass. Anything
+   that hears the caller sets it back to 0. A missed reset does not fail on the FIRST silence
+   of a call; it fails on the second, by hanging up instantly.
+     resets: choose() startTalking() stopTalking() restart() endCall() sendTyped()
+             endTurn() recog.onresult                                                        */
+const LADDER = [
+  () => turnsSent ? NOTES.reask : NOTES.help,
+  () => NOTES.check,
+  () => NOTES.last,
+  () => NOTES.close,
+];
 function clearNoReply(){ if(noReplyTimer){ clearTimeout(noReplyTimer); noReplyTimer=null; } }
-function armNoReply(){
+/* `fresh` grants the first-rung wait WITHOUT rewinding the ladder — for evidence of presence
+   that is not yet an answer, like a chat caller typing. They are here, so don't rush them;
+   they still haven't replied, so don't hand them four more nudges either. */
+function armNoReply(fresh){
   clearNoReply();
   if(!listening && !isChat()) return;
   if(endingCall) return;
-  noReplyTimer=setTimeout(handleNoReply, isChat()?NO_REPLY_CHAT_MS:NO_REPLY_MS);
+  const first = fresh || !noReplyRung;
+  noReplyTimer=setTimeout(handleNoReply,
+    isChat() ? (first?NO_REPLY_CHAT_MS:NO_REPLY_CHAT_AGAIN_MS)
+             : (first?NO_REPLY_MS:NO_REPLY_AGAIN_MS));
 }
 async function handleNoReply(){
   noReplyTimer=null;
   if((!listening && !isChat()) || endingCall) return;
-  if(waitingForServer||playing||capturing){ armNoReply(); return; }
-  if(noReplyCount<2){ noReplyCount++; sendSilent(NOTES.reask); }
-  else if(!closeRequested){ closeRequested=true; sendSilent(NOTES.close); }
-  else { endingCall=true; sayFixed(NOTES.ending); }
+  if(waitingForServer||playing||capturing){ armNoReply(); return; }  // busy → poll, don't step
+  stepLadder();
+}
+/* The ONE ladder body. Both entry points call this and nothing else — the two copies that used
+   to live here and in onBrokenInput() were free to drift apart, and did. */
+function stepLadder(){
+  // A rung whose line failed to load is SKIPPED, never stalled on. The old code handed '' to
+  // sendSilent(), which returned at its own guard having armed nothing: the ladder died
+  // mid-air and the call sat open until someone reloaded the page.
+  while(noReplyRung < LADDER.length){
+    const note = LADDER[noReplyRung++]();
+    if(note){ sendSilent(note); return; }
+  }
+  noReplyRung = LADDER.length;
+  endingCall = true;
+  if(NOTES.ending) sayFixed(NOTES.ending); else endCall();
 }
 async function sendSilent(note){
   if(!note) return;
@@ -931,23 +987,25 @@ function onBrokenInput(){
   if(!listening && !isChat()){ setPill('idle'); return; }
   if(endingCall){ endCall(); return; }
   rearm();
-  if(noReplyCount<2){ noReplyCount++; sendSilent(NOTES.reask); }
-  else if(!closeRequested){ closeRequested=true; sendSilent(NOTES.close); }
-  else { endingCall=true; sayFixed(NOTES.ending); }
+  stepLadder();      // an empty transcript IS silence — same ladder, same rung, same count
 }
 async function sayFixed(text){
   bubble(text,'assistant');
-  try{
-    const fd=new FormData();
-    fd.append('text',text); fd.append('password',adminPw);
-    fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
-    const j=await (await jfetch('/api/say',{method:'POST',body:fd})).json();
-    if(j&&j.audio_b64) playAudio(b64toBlob(j.audio_b64,j.audio_mime));
-  }catch(e){}
+  // /api/say synthesises for any scenario, unlike /api/opening which returns no audio for
+  // chat. A WhatsApp thread must not start speaking at the last rung.
+  if(!isChat()){
+    try{
+      const fd=new FormData();
+      fd.append('text',text); fd.append('password',adminPw);
+      fd.append('scenario',sessionScenario); fd.append('lang',sessionLang);
+      const j=await (await jfetch('/api/say',{method:'POST',body:fd})).json();
+      if(j&&j.audio_b64) playAudio(b64toBlob(j.audio_b64,j.audio_mime));
+    }catch(e){}
+  }
   endOfStream();
 }
 function endCall(){
-  endingCall=false; noReplyCount=0; closeRequested=false; clearNoReply(); clearAudioQueue();
+  endingCall=false; noReplyRung=0; protectOpener=false; clearNoReply(); clearAudioQueue();
   if(listening){
     listening=false; stopMic(); stopRecog();
     $('btnStart').classList.remove('on');
@@ -1009,7 +1067,9 @@ $('btnStop').onclick=stopTalking;
 $('btnRestart').onclick=restart;
 $('btnSend').onclick=sendTyped;
 $('typebox').addEventListener('keydown',e=>{ if(e.key==='Enter') sendTyped(); });
-$('typebox').addEventListener('input',()=>{ if(isChat()&&turnsSent>0) armNoReply(); });
+/* Typing is presence, not an answer: give back the full first-rung wait, but keep the rung —
+   otherwise a slow typer at rung 3 gets closed on mid-sentence. */
+$('typebox').addEventListener('input',()=>{ if(isChat()&&turnsSent>0) armNoReply(true); });
 $('sens').addEventListener('input',e=>{
   const v=parseFloat(e.target.value);
   // Cached here so onPcm never reads the DOM — it runs ~375 times a second and a layout-forcing
@@ -1054,7 +1114,7 @@ function _unlockAudio(){
 async function startTalking(){
   if(listening) return;
   _unlockAudio();
-  endingCall=false; noReplyCount=0; closeRequested=false; clearNoReply();
+  endingCall=false; noReplyRung=0; clearNoReply();
   await ensureWS();
   listening=true;
   $('btnStart').classList.add('on'); $('btnStart').textContent='● On the call';
@@ -1064,11 +1124,20 @@ async function startTalking(){
     if(CONFIG.stt==='sarvam') await startMic(); else startRecog();
   }
   setPill('listening');
-  if(SC.outbound && !isChat()) armNoReply();                 // no "hello?" in 3s → agent speaks
-  else if(!callOpened){ callOpened=true; sendSilent('(Call connected.)'); }
+  // BOTH directions open the call immediately. Outbound used to arm a 3s timer here instead —
+  // three seconds of dead air on pickup, and then the first rung of the ladder was spent
+  // delivering the GREETING, because _process_text returns the pre-synthesised opener for
+  // whatever text arrives while the history is empty. Outbound therefore got one real
+  // follow-up where inbound got two, and the two were never the same call.
+  if(!callOpened){ callOpened=true; protectOpener=true; sendSilent('(Call connected.)'); }
+  // …and arm behind it. sendSilent()'s own clearNoReply() runs before its first await, so this
+  // survives; handleNoReply() then sees waitingForServer and polls rather than stepping. That
+  // makes this the watchdog on an opener that never arrives — the job the deleted timer was
+  // quietly doing for outbound, and the reason the page cannot sit silent with the mic open.
+  armNoReply();
 }
 function stopTalking(){
-  listening=false; clearNoReply(); noReplyCount=0; endingCall=false; closeRequested=false;
+  listening=false; clearNoReply(); noReplyRung=0; endingCall=false; protectOpener=false;
   $('btnStart').classList.remove('on');
   $('btnStart').textContent = SC.chat?'Start the chat':(SC.outbound?'Answer the call':'Call them');
   $('btnStop').disabled=true;
@@ -1076,17 +1145,23 @@ function stopTalking(){
   wsSend({type:'control',action:'stop'}); setPill('idle');
 }
 function restart(){
-  clearNoReply(); noReplyCount=0; endingCall=false; closeRequested=false; clearAudioQueue();
+  clearNoReply(); noReplyRung=0; endingCall=false; protectOpener=false; clearAudioQueue();
   httpHistory=[]; turnsSent=0; callOpened=false; hudTurns=[]; $('hud').style.display='none';
   $('convo').querySelectorAll('.msg,.typing,.note').forEach(n=>n.remove());
   const b=$('brief'); if(b) b.style.display='';
   renderGoals({});
   wsSend({type:'control',action:'restart'});
+  // …and re-open. Restart used to clear everything and open nothing: mic live, agent silent,
+  // no timer armed, forever. Outbound only appeared to survive it because the old pickup timer
+  // covered the gap on a fresh Start. wsSend is synchronous, so the restart is on the wire
+  // before this — and if the socket had died, the connect note lands on a fresh state anyway.
+  if(listening||isChat()){ callOpened=true; protectOpener=true;
+                           sendSilent('(Call connected.)'); armNoReply(); }
 }
 async function sendTyped(){
   const v=$('typebox').value.trim(); if(!v) return;
   $('typebox').value='';
-  clearNoReply(); noReplyCount=0; closeRequested=false; endingCall=false;
+  clearNoReply(); noReplyRung=0; endingCall=false;
   turnsSent++; tEndOfSpeech=performance.now();
   await ensureWS();
   if(httpMode) postTurn({text:v});
@@ -1149,7 +1224,13 @@ function echoVerdict(nf){
       : '🎧 Headphones detected — go ahead and talk over me whenever you like.');
   }
 }
-function bargeActive(){ return bargeOn && !echoSuspected; }
+/* protectOpener: the opener is the ONE line that must be heard whole. The server has already
+   appended it to the history in full and the prompt asserts it was spoken, so a reflexive
+   "Hello?" cutting it mid-word leaves the model believing it introduced itself and named the
+   enquiry while the caller heard "Hi, is that Ar—". Unrecoverable in conversation. This could
+   not happen while the opener only played in RESPONSE to the caller; now that it plays the
+   instant the line connects, it can. */
+function bargeActive(){ return bargeOn && !echoSuspected && !protectOpener; }
 function setBargeUi(){
   const el=$('bargeState'); if(!el) return;
   el.textContent = !bargeOn ? 'off' : (echoSuspected ? 'waiting for headphones' : 'active');
@@ -1311,7 +1392,10 @@ function onPcm(chunk){
     bargeVoiced=0;
     clearAudioQueue();                 // cut the agent off mid-sentence
     dropAudioUntilIdle=true;           // and ignore the rest of that reply as it arrives
-    waitingForServer=false; muteUntil=0;
+    // Between this frame and the onset threshold below, neither capturing nor waitingForServer
+    // is true and the pending timer is still live — so a nudge could fire on top of a caller
+    // who is actively speaking. The 2s again-wait makes that window likelier to be hit.
+    waitingForServer=false; muteUntil=0; clearNoReply();
     sysNote('🎧 Go ahead —');
     // fall through: this frame begins the caller's turn
   }
@@ -1478,7 +1562,7 @@ function endTurn(){
     if(listening&&!endingCall) armNoReply();
     return;
   }
-  noReplyCount=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
+  noReplyRung=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
   tEndOfSpeech=performance.now();                // the clock the HUD reports
   if(streamed&&ws&&ws.readyState===1){
     pumpMicStream(true);
@@ -1532,7 +1616,7 @@ function startRecog(){
   recog=new SR(); recog.lang=langCode(); recog.continuous=false; recog.interimResults=false;
   recog.onresult=e=>{
     const t=e.results[0][0].transcript;
-    clearNoReply(); noReplyCount=0; turnsSent++; tEndOfSpeech=performance.now();
+    clearNoReply(); noReplyRung=0; turnsSent++; tEndOfSpeech=performance.now();
     if(httpMode){ postTurn({text:t}); return; }
     waitingForServer=true; setPill('transcribing');
     wsSend({type:'turn_text',text:t,scenario:sessionScenario,lang:sessionLang,disclose:disclose});
@@ -1766,6 +1850,7 @@ function afterPlay(){
   // Speaker-tail guard, and clear the pre-roll so nothing recorded during the agent's own line
   // can be prepended to the caller's next utterance.
   muteUntil=performance.now()+200; preRoll=[];
+  protectOpener=false;      // the opener has now been heard whole; barge-in is live again
   if(endingCall){ endCall(); return; }
   if(listening||isChat()){ setPill('listening'); rearm(); armNoReply(); }
   else setPill('idle');

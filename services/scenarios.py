@@ -63,10 +63,20 @@ LEAD = {
         "ends": "Riya has all four answers and files you as hot, warm or cold — or you "
                 "say you're not interested and she closes politely.",
     },
+    # Every value that is PROSE carries a _hi and a _te. _context() swaps them for the call's
+    # language and _known_block prints them straight into the prompt, so one missing variant is
+    # a Latin phrase inside a Hindi prompt whose own number guide bans Latin outright. Only
+    # phone, amount, due_date and loan_ref are exempt: verbalize.py already renders those per
+    # language on the way to the voice. test_language_parity.py derives the rule rather than
+    # listing it, so a new key is covered the day it is added.
     "known": {
         "name": "Arjun Mehta", "name_hi": "अर्जुन मेहता", "name_te": "అర్జున్ మెహతా",
-        "phone": "9845012345", "company": "Bloom Interiors",
+        "phone": "9845012345",
+        "company": "Bloom Interiors", "company_hi": "ब्लूम इंटीरियर्स",
+        "company_te": "బ్లూమ్ ఇంటీరియర్స్",
         "source": "downloaded the pricing guide on the website a few minutes ago",
+        "source_hi": "अभी कुछ मिनट पहले वेबसाइट से प्राइसिंग गाइड डाउनलोड की है",
+        "source_te": "ఇప్పుడే కొన్ని నిమిషాల క్రితం వెబ్‌సైట్ నుంచి ప్రైసింగ్ గైడ్ డౌన్‌లోడ్ చేశారు",
     },
     "goal": [
         ("need", "What they need"),
@@ -151,8 +161,11 @@ COLDCALL = {
     },
     "known": {
         "name": "Sneha Reddy", "name_hi": "स्नेहा रेड्डी", "name_te": "స్నేహా రెడ్డి",
-        "phone": "9701234567", "company": "Kaya Wellness",
+        "phone": "9701234567",
+        "company": "Kaya Wellness", "company_hi": "काया वेलनेस", "company_te": "కాయా వెల్‌నెస్",
         "source": "a cold call — they have NOT enquired and do not know this studio",
+        "source_hi": "ठंडी कॉल है — उन्होंने कोई पूछताछ नहीं की और इस स्टूडियो को जानते भी नहीं",
+        "source_te": "కోల్డ్ కాల్ — వాళ్ళు ఏ విచారణా చేయలేదు, ఈ స్టూడియో గురించి తెలియదు",
     },
     "goal": [
         ("interest", "Interested or not"),
@@ -227,8 +240,16 @@ WINBACK = {
         "name": "Pooja Nair", "name_hi": "पूजा नायर", "name_te": "పూజా నాయర్",
         "phone": "9880045612", "company": "",
         "source": "a regular customer whose last visit was seven months ago",
-        "last_visit": "seven months ago", "usual": "hair colour and a spa pedicure",
-        "branch": "Jubilee Hills", "branch_hi": "जुबली हिल्स",
+        "source_hi": "पुरानी ग्राहक हैं, आख़िरी बार सात महीने पहले आई थीं",
+        "source_te": "రెగ్యులర్ కస్టమర్, చివరిసారి ఏడు నెలల క్రితం వచ్చారు",
+        "last_visit": "seven months ago",
+        "last_visit_hi": "सात महीने पहले", "last_visit_te": "ఏడు నెలల క్రితం",
+        # `usual` is also interpolated into the flow as {usual} — the flow is an English
+        # instruction naming the phrase the agent should SAY, so the native form belongs here.
+        "usual": "hair colour and a spa pedicure",
+        "usual_hi": "हेयर कलर और स्पा पेडीक्योर",
+        "usual_te": "హెయిర్ కలర్, స్పా పెడిక్యూర్",
+        "branch": "Jubilee Hills", "branch_hi": "जुबली हिल्स", "branch_te": "జూబ్లీ హిల్స్",
     },
     "goal": [
         ("reason", "Why they lapsed"),
@@ -304,7 +325,11 @@ FEEDBACK = {
         "name": "Ramesh Gupta", "name_hi": "रमेश गुप्ता", "name_te": "రమేష్ గుప్తా",
         "phone": "9963012789", "company": "",
         "source": "a full blood profile at the Kukatpally branch three days ago",
-        "test": "full blood profile", "branch": "Kukatpally", "branch_hi": "कूकटपल्ली",
+        "source_hi": "तीन दिन पहले कूकटपल्ली ब्रांच में फ़ुल ब्लड प्रोफ़ाइल करवाई थी",
+        "source_te": "మూడు రోజుల క్రితం కూకట్‌పల్లి బ్రాంచ్‌లో ఫుల్ బ్లడ్ ప్రొఫైల్ చేయించుకున్నారు",
+        "test": "full blood profile",
+        "test_hi": "फ़ुल ब्लड प्रोफ़ाइल", "test_te": "ఫుల్ బ్లడ్ ప్రొఫైల్",
+        "branch": "Kukatpally", "branch_hi": "कूकटपल्ली", "branch_te": "కూకట్‌పల్లి",
     },
     "goal": [
         ("rating", "Rating out of five"),
@@ -381,11 +406,16 @@ COLLECTIONS = {
         "name": "Rahul Sharma", "name_hi": "राहुल शर्मा", "name_te": "రాహుల్ శర్మ",
         "phone": "9848011223", "company": "",
         "source": "a personal loan customer with an instalment due",
+        "source_hi": "पर्सनल लोन के ग्राहक हैं, एक किश्त बाक़ी है",
+        "source_te": "పర్సనల్ లోన్ కస్టమర్, ఒక వాయిదా బాకీ ఉంది",
         # RELATIVE, not absolute. This was the literal "2026-07-28" against a card promising the
         # EMI is "due in a few days" — so every day the demo ran, the reminder was about a date
         # further in the past. _context() resolves the token; verbalize speaks it as a date.
         "amount": "₹8,400", "due_date": "{in_three_days}", "loan_ref": "SF-4521",
-        "loan_kind": "personal loan", "emi_no": "seven of twenty-four",
+        "loan_kind": "personal loan",
+        "loan_kind_hi": "पर्सनल लोन", "loan_kind_te": "పర్సనల్ లోన్",
+        "emi_no": "seven of twenty-four",
+        "emi_no_hi": "चौबीस में से सातवीं", "emi_no_te": "ఇరవై నాలుగులో ఏడో వాయిదా",
     },
     "goal": [
         ("outcome", "Outcome of the call"),

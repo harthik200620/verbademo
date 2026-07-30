@@ -65,7 +65,17 @@ BUILT = {(sid, lang): prompts.build_system_prompt(TODAY, sid, lang, True)
 # rules that were simply absent. The premise that the bulk was duplication turned out to be
 # wrong: the bulk is instruction, and the duplication was about a tenth of it. The value of the
 # rewrite is that the rules no longer contradict each other, not that the prompt got smaller.
-WORD_CEILING = 3200
+#
+# Raised 3200 -> 3210 when _NUM_GUIDE gained its REGISTER block; worst case measured 3202
+# (lead/telugu). Those words bought three things that were simply absent: a say-this-not-that
+# register steer per language — the only text in the whole prompt that addresses "it talks like
+# a textbook, not like a person" — plus the time rule and reference-code rule Telugu never had,
+# and the place-name rule English never had. About fifteen words came back out by deleting the
+# corporate-filler list this block had begun duplicating from _LANG_RULE.
+#
+# The point of this number is to catch regrowth nobody INTENDED. Raising it deliberately with
+# the delta accounted for is the guard working; raising it to turn a red suite green is not.
+WORD_CEILING = 3210
 
 
 # ── nothing unresolved, nothing unspeakable ──────────────────────────────────
