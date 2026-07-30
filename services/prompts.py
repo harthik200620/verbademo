@@ -529,11 +529,13 @@ def _num_guide_for(sc: dict, lang: str) -> str:
         # used to be English-only with no script or register guidance in any language, so the
         # chat scenario was the one place the language rules simply did not reach.
         return ("HOW YOU WRITE NUMBERS AND WORDS — this is TEXT, not speech:\n"
-                "₹35,000 and 9 am and 3-4 months as DIGITS, never spelled out. Keep the ₹ "
-                "symbol. Phone numbers, order numbers and reference codes as written — 9845012345, "
-                "NV-10234 — never digit by digit; nobody types it that way.\n"
                 + "\n".join(ln for ln in _NUM_GUIDE[lang].split("\n")
-                            if ln.startswith(("SCRIPT:", "REGISTER:"))))
+                            if ln.startswith(("SCRIPT:", "REGISTER:")))
+                + "\nNUMBERS INVERT, because nobody types a number as words: ₹35,000 and 9 am "
+                  "and 3-4 months as DIGITS, never spelled out. Keep the ₹ symbol.\n"
+                  "The script rule above is about WORDS. Numbers, phone numbers, order numbers "
+                  "and reference codes stay exactly as they are — 9845012345, NV-10234 — never "
+                  "digit by digit and never transliterated; nobody types them that way.")
     return "HOW YOU SPEAK NUMBERS AND WORDS:\n" + _NUM_GUIDE[lang]
 
 
