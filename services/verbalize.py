@@ -216,6 +216,30 @@ def en_ordinal(n: int) -> str:
     return f"{_EN_TENS[tens // 10]} {_EN_ORD_ONES.get(ones, _EN_ONES[ones] + 'th')}"
 
 
+# Telugu ordinals are regular where it matters: swap the final vowel sign for ఓ.
+#   ఒకటి → ఒకటో   రెండు → రెండో   ఎనిమిది → ఎనిమిదో   పది → పదో
+# The two that are not are the bare tens, which end in ై and take -య్యో instead. For 21-31 only
+# the UNIT takes the suffix — "ఇరవై ఒకటో", never "ఇరవయ్యో ఒకటో" — which falls out of applying the
+# swap to the last word only.
+_TE_ORD_TENS = {20: "ఇరవయ్యో", 30: "ముప్పయ్యో"}
+_TE_VOWEL_SIGNS = "ిీుూ"      # ి ీ ు ూ
+
+
+def te_ordinal(n: int) -> str:
+    """3 -> 'మూడో', 28 -> 'ఇరవై ఎనిమిదో'. Spoken dates only — Telugu says the day as an
+    ordinal, where Hindi says the plain cardinal."""
+    if n in _TE_ORD_TENS:
+        return _TE_ORD_TENS[n]
+    words = number_words(n, "telugu").split()
+    if not words:
+        return ""
+    last = words[-1]
+    if last and last[-1] in _TE_VOWEL_SIGNS:
+        last = last[:-1]
+    words[-1] = last + "ో"                    # ో
+    return " ".join(words)
+
+
 def letters_words(letters: str, lang: str) -> str:
     table = _LETTER_NAMES.get(lang, _LETTER_NAMES["english"])
     sep = "-" if lang == "english" else "-"
@@ -260,12 +284,21 @@ def date_words(day: int, month: int, lang: str, year: int | None = None) -> str:
     English uses the ordinal ('twenty eighth July'), not the digit, because the
     scanner's bare-number pass would otherwise rewrite a leftover '28' a second
     time and turn a date back into a plain number.
+
+    Each language gets its OWN word order, which is the whole point — a date in
+    the English order with the words swapped sounds translated:
+      english  day then month, ordinal ..... 'third August'
+      hindi    day then month, cardinal .... 'तीन अगस्त'
+      telugu   MONTH then day, ordinal ..... 'ఆగస్టు మూడో తేదీ'
+    Telugu shipped day-first, which is English word order wearing Telugu words.
     """
     months = _MONTHS.get(lang, _MONTHS["english"])
     if not 1 <= month <= 12 or not 1 <= day <= 31:
         return ""
     if lang == "english":
         out = f"{en_ordinal(day)} {months[month]}"
+    elif lang == "telugu":
+        out = f"{months[month]} {te_ordinal(day)} తేదీ"
     else:
         out = f"{number_words(day, lang)} {months[month]}"
     if year:
@@ -483,7 +516,13 @@ _RE_MONEY = re.compile(
     re.IGNORECASE,
 )
 _RE_PHONE = re.compile(r"(?<![\d/-])(?:\+91[\s-]?)?([6-9]\d{9})(?![\d/-])")
-_RE_REF = re.compile(r"\b([A-Z]{2,5})[\s]?-[\s]?(\d{2,10})\b")
+# Case-INSENSITIVE, and one letter is enough. It demanded 2-5 UPPERCASE letters, so a model
+# writing "nv-10234" fell through — and _RE_BARE's lookbehind rejects digits preceded by a
+# hyphen, so nothing caught them either and the raw string reached the voice.
+# Three digits minimum, not two: with lowercase allowed, "\d{2,}" would also swallow ordinary
+# English hyphenations — top-10, covid-19, g-20 — and read them out letter by letter. Every
+# reference in this app is four digits or more.
+_RE_REF = re.compile(r"\b([A-Za-z]{1,5})[\s]?-[\s]?(\d{3,10})\b")
 _RE_PERCENT = re.compile(r"\b(\d{1,3}(?:\.\d{1,2})?)\s*%")
 _RE_UNIT = re.compile(
     r"\b(\d{1,6}(?:\.\d{1,2})?)\s*(" + "|".join(sorted(_UNITS, key=len, reverse=True)) + r")\b",

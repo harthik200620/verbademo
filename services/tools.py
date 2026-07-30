@@ -418,12 +418,72 @@ def _clean_name(v) -> str:
     return "" if s.lower() in _JUNK_NAMES or len(s) < 2 else s
 
 
+# Every way a date reaches this function, because it arrives as whatever the model typed.
+#
+# It used to accept THREE formats. Everything else came back as "not a date I can save" and the
+# model, having written something perfectly sensible, wrote it again — so a caller who said
+# "next Monday" or "the third of August" got asked two or three more times. That reads as the
+# agent being stupid, and it is the most common way a booking call falls apart.
+#
+# Day-first on ambiguity (13/08 is the thirteenth), matching verbalize._RE_DMY and Indian usage.
+_DATE_FMTS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%y", "%d/%m/%y",
+              "%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y", "%d %b", "%d %B")
+_RE_ORD_SUFFIX = re.compile(r"(\d)(?:st|nd|rd|th)\b", re.IGNORECASE)
+
+# "कल" and "परसों" mean either direction in Hindi; on a booking or promise-to-pay call the
+# forward reading is the only one that can be true, and validate() rejects the past anyway.
+_REL_DAYS = {
+    "today": 0, "aaj": 0, "आज": 0, "ఈరోజు": 0, "ఇవాళ": 0,
+    "tomorrow": 1, "tmrw": 1, "कल": 1, "रेपु": 1, "రేపు": 1,
+    "day after tomorrow": 2, "day after": 2, "परसों": 2, "ఎల్లుండి": 2,
+}
+_WEEKDAYS = {
+    "monday": 0, "mon": 0, "सोमवार": 0, "సోమవారం": 0,
+    "tuesday": 1, "tue": 1, "tues": 1, "मंगलवार": 1, "మంగళవారం": 1,
+    "wednesday": 2, "wed": 2, "बुधवार": 2, "బుధవారం": 2,
+    "thursday": 3, "thu": 3, "thurs": 3, "गुरुवार": 3, "बृहस्पतिवार": 3, "గురువారం": 3,
+    "friday": 4, "fri": 4, "शुक्रवार": 4, "శుక్రవారం": 4,
+    "saturday": 5, "sat": 5, "शनिवार": 5, "శనివారం": 5,
+    "sunday": 6, "sun": 6, "रविवार": 6, "इतवार": 6, "ఆదివారం": 6,
+}
+
+
 def _parse_date(s: str):
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+    """Whatever the model wrote, as a real date — or None.
+
+    Deliberately permissive about FORM and not at all permissive about VALUE: validate() still
+    refuses a date in the past or more than a year out. Widening this does not widen those."""
+    raw = str(s or "").strip()
+    if not raw:
+        return None
+    for fmt in _DATE_FMTS:
         try:
-            return datetime.strptime(str(s).strip(), fmt).date()
+            d = datetime.strptime(raw, fmt)
+            # "%d %b" carries no year — strptime defaults to 1900, so take the next occurrence.
+            if "%y" not in fmt.lower():
+                today = today_ist().date()
+                d = d.replace(year=today.year)
+                if d.date() < today:
+                    d = d.replace(year=today.year + 1)
+            return d.date()
         except (ValueError, TypeError):
             continue
+
+    # "3rd August 2026" / "August 3, 2026" — strip what strptime cannot read, then retry.
+    cleaned = _RE_ORD_SUFFIX.sub(r"\1", raw.replace(",", " "))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned != raw:
+        return _parse_date(cleaned)
+
+    low = raw.lower().strip(" .!?")
+    if low in _REL_DAYS:
+        return today_ist().date() + timedelta(days=_REL_DAYS[low])
+    # "next Monday", "this Friday", "Monday" — always the COMING one, never today.
+    for word in low.replace("next ", "").replace("this ", "").replace("coming ", "").split():
+        if word in _WEEKDAYS:
+            today = today_ist().date()
+            ahead = (_WEEKDAYS[word] - today.weekday()) % 7
+            return today + timedelta(days=ahead or 7)
     return None
 
 

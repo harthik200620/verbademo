@@ -5,9 +5,18 @@ Pure and offline — no keys, no network. Run:  python tests/test_verbalize.py
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+# Without this the REPORTER itself dies on Windows cp1252 — every failure in a file whose
+# subject is Devanagari and Telugu was printed as a traceback instead of a diff.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 from services.verbalize import (  # noqa: E402
     date_words, digits_words, for_speech, letters_words, money_words, number_words,
@@ -60,7 +69,10 @@ eq(date_words(1, 8, "english"), "first August", "date 1aug en")
 eq(date_words(3, 9, "english"), "third September", "date 3sep en")
 eq(date_words(20, 1, "english"), "twentieth January", "date 20jan en")
 eq(date_words(28, 7, "hindi"), "अट्ठाईस जुलाई", "date hi")
-eq(date_words(28, 7, "telugu"), "ఇరవై ఎనిమిది జూలై", "date te")
+# This assertion used to pin "ఇరవై ఎనిమిది జూలై" — day-first, which is the ENGLISH order with
+# Telugu words dropped in. It was the file's only Telugu date test, so it locked the mistake in.
+# See the fuller Telugu block near the bottom.
+eq(date_words(28, 7, "telugu"), "జూలై ఇరవై ఎనిమిదో తేదీ", "date te")
 eq(date_words(23, 7, "hindi"), "तेईस जुलाई", "date 23jul hi")
 eq(date_words(15, 7, "hindi"), "पंद्रह जुलाई", "date 15jul hi")
 eq(date_words(1, 13, "english"), "", "date invalid month")
@@ -154,6 +166,41 @@ eq(spoken_length("ఎనిమిది వేల నాలుగు వంద�
 eq(spoken_length(""), 0, "empty")
 eq(spoken_length("Call nine eight seven six five four three two one zero back."), 3,
    "a read-back digit run is one unit, not ten")
+
+# ── dates in the languages that had no test ──────────────────────────────────
+# Telugu puts the MONTH first and the day as an ordinal: "ఆగస్టు మూడో తేదీ", not "మూడు ఆగస్టు".
+# Day-first is the English order transliterated, and it is what shipped — there was exactly one
+# Telugu date assertion in this file, and it pinned the wrong order.
+eq(date_words(3, 8, "telugu"), "ఆగస్టు మూడో తేదీ", "telugu date is month-first, day ordinal")
+eq(date_words(28, 7, "telugu"), "జూలై ఇరవై ఎనిమిదో తేదీ", "…and holds in the twenties")
+eq(date_words(1, 1, "telugu"), "జనవరి ఒకటో తేదీ", "…and at the start of the month")
+# Hindi genuinely is day-first with a plain cardinal — "तीन अगस्त" is what people say.
+eq(date_words(3, 8, "hindi"), "तीन अगस्त", "hindi date stays day-first")
+
+# The scanner end to end, which had ZERO Telugu assertions.
+eq(verbalize("Due 2026-08-03.", "hindi"), "Due तीन अगस्त.", "scan iso date hi")
+eq(verbalize("Due 2026-08-03.", "telugu"), "Due ఆగస్టు మూడో తేదీ.", "scan iso date te")
+
+# ── reference codes the case-sensitive pattern used to miss ──────────────────
+# _RE_REF wanted 2-5 UPPERCASE letters. A model writing "nv-10234" — or a single-letter prefix —
+# fell through, and _RE_BARE's lookbehind rejects digits preceded by a hyphen, so nothing else
+# caught them either: the raw string reached the voice.
+for lang, want in (("english", "one zero two three four"),
+                   ("hindi", "एक शून्य दो तीन चार"),
+                   ("telugu", "ఒకటి సున్నా రెండు మూడు నాలుగు")):
+    eq(want in verbalize("Order nv-10234 is ready.", lang), True, f"lowercase ref spoken ({lang})")
+    eq(want in verbalize("Order N-10234 is ready.", lang), True,
+       f"single-letter ref spoken ({lang})")
+
+# ── the module's own rule, finally pinned ────────────────────────────────────
+# verbalize.py:22 states "Native script only", and _NUM_GUIDE tells the model Latin text is
+# mispronounced by the voice — but nothing asserted that what LEAVES for_speech obeys it.
+_LATIN_RUN = re.compile(r"[A-Za-z]{2,}")
+for lang, text in (
+        ("hindi", "किश्त ₹8,400, तारीख़ 2026-08-03, रेफ़रेंस SF-4521, फ़ोन 9848011223."),
+        ("telugu", "వాయిదా ₹8,400, తేదీ 2026-08-03, రిఫరెన్స్ SF-4521, ఫోన్ 9848011223.")):
+    eq(_LATIN_RUN.findall(for_speech(text, lang)), [],
+       f"for_speech leaves no Latin for the voice to mangle ({lang})")
 
 # ── report ───────────────────────────────────────────────────────────────────
 if FAILS:

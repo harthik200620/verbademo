@@ -109,10 +109,20 @@ def _voice_settings_for(lang: str) -> dict:
     NOTE: these knobs only shape DELIVERY. The accent/quality of English comes from the VOICE
     you pick (ELEVENLABS_VOICE_ID) — a clean native-English voice matters far more than any
     setting. Every knob is env-overridable (ELEVENLABS_STABILITY / _SIMILARITY / _STYLE)."""
+    # Per-language override, falling back to the shared value — so Hindi can be steadied without
+    # flattening English. `lang` was accepted and ignored here for the whole life of the file.
+    suffix = {"hindi": "_HI", "telugu": "_TE"}.get((lang or "").lower(), "_EN")
+
+    def knob(name: str, default: str) -> float:
+        # Not `_float_env(..., "")` — float("") raises in both the try and the except.
+        per_lang = f"ELEVENLABS_{name}{suffix}"
+        base = f"ELEVENLABS_{name}"
+        return _float_env(per_lang if _clean(per_lang, "") else base, default)
+
     return {
-        "stability": _float_env("ELEVENLABS_STABILITY", "0.5"),
-        "similarity_boost": _float_env("ELEVENLABS_SIMILARITY", "0.75"),
-        "style": _float_env("ELEVENLABS_STYLE", "0.0"),
+        "stability": knob("STABILITY", "0.5"),
+        "similarity_boost": knob("SIMILARITY", "0.75"),
+        "style": knob("STYLE", "0.0"),
         "use_speaker_boost": True,
     }
 
@@ -290,6 +300,20 @@ async def _sarvam(text: str, lang: str = "english") -> tuple[bytes | None, str |
         "model": SARVAM_TTS_MODEL,
         "speaker": SARVAM_TTS_SPEAKER,
     }
+    # Sarvam speaks Telugu for us, and Telugu is the one that gets reported as hard to follow.
+    # `pace` below 1.0 slows delivery, which is the single most effective lever on clarity —
+    # but it is a matter of taste and only an ear can set it, so it ships INERT and per-language
+    # (SARVAM_TTS_PACE_TE=0.9 etc.). Nothing is sent unless a value is configured, so the
+    # default request is byte-for-byte what it was.
+    for knob in ("pace", "pitch", "loudness"):
+        suffix = {"hindi": "_HI", "telugu": "_TE"}.get((lang or "").lower(), "_EN")
+        raw = _clean(f"SARVAM_TTS_{knob.upper()}{suffix}", "") or _clean(
+            f"SARVAM_TTS_{knob.upper()}", "")
+        if raw:
+            try:
+                body[knob] = float(raw)
+            except ValueError:
+                pass
     resp = await _http.client().post(url, headers=headers, json=body)
     resp.raise_for_status()
     j = resp.json()
