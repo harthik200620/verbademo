@@ -320,8 +320,14 @@ async def _generate(contents: list, scenario: str, lang: str,
             if len(order) > 1:
                 cur = (cur + 1) % len(order)
             for _ in range(len(order)):
-                if (time.monotonic() >= hard_deadline
-                        or last_attempt_count >= _MAX_KEYS_PER_TURN):
+                # TIME is the bound here, deliberately NOT a key count. _MAX_KEYS_PER_TURN
+                # earns its place on the streaming path, where every extra attempt is a hedged
+                # request that costs real quota. This walk is sequential and a 429 comes back in
+                # ~170ms, so trying another key is nearly free — and capping it at 20 of 104 is
+                # what turned a throttled pool from "slow but answers" into "gives up in 3.4s
+                # and apologises", measured against the live host. Walk until the caller's
+                # budget is genuinely spent; cheap failures should not consume it.
+                if time.monotonic() >= hard_deadline:
                     break
                 key_idx = order[cur]
                 if respect_cooldowns and _cooldown.get(key_idx, 0) > time.time():
@@ -496,9 +502,28 @@ async def _generate_stream(contents: list, scenario: str, lang: str,
     # `_MAX_KEYS_PER_TURN` bounds the walk, which is what it was always for. `hard_deadline` is
     # only a backstop against a pathological turn running forever.
     hard_deadline = time.monotonic() + _TURN_GIVEUP_MS / 1000
-    for attempt, primary in enumerate(order):
+    # `attempt` advances by however many keys the block actually LAUNCHED, not by one. A block
+    # that stalls escalates through order[attempt+1], order[attempt+2]… and when it then fails,
+    # stepping `attempt` by a single place sends the next block straight back over keys that
+    # were just tried. Captured with GEMINI_DEBUG=1 against the live pool:
+    #
+    #   key82 silent >2500ms - escalating to key83
+    #   key83 ERR 429
+    #   key82 silent >2500ms - escalating to key83     <- both again
+    #   key83 ERR 429
+    #   key83 ERR 429                                  <- a third time
+    #   FAIL 12001ms keys=8
+    #
+    # Twelve seconds spent, 8 attempts, and only ~3 DISTINCT keys of 104 ever contacted — so the
+    # turn dies with the pool essentially untouched and the caller hears the apology. This is the
+    # same symptom the per-key deadline fix addressed and a genuinely separate cause: that one
+    # was a budget computed once, this one is a cursor that does not move.
+    attempt = 0
+    while attempt < len(order):
         if time.monotonic() >= hard_deadline or last_attempt_count >= _MAX_KEYS_PER_TURN:
             break
+        primary = order[attempt]
+        fired = 1                    # bound before the try: the finally and the skip both read it
         turn_deadline = min(hard_deadline, time.monotonic() + _TTFT_GIVEUP_MS / 1000)
         q: asyncio.Queue = asyncio.Queue()
         tasks: dict[int, asyncio.Task] = {}
@@ -579,7 +604,8 @@ async def _generate_stream(contents: list, scenario: str, lang: str,
                         last_attempt_count += 1
                         next_deadline = time.monotonic() + _TTFT_STALL_MS / 1000
             if winner is None:
-                continue                        # nothing came back on this key — try the next
+                attempt += fired    # skip the keys this block already burned, never re-try them
+                continue            # nothing came back on these — try the ones after them
             for tag, t in tasks.items():
                 if tag != winner and not t.done():
                     t.cancel()

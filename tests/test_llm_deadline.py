@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -169,6 +170,36 @@ eq(cooled <= 1, True,
    f"a successful turn cools at most the stalled key, not the whole race ({cooled} cooled)")
 llm._cooldown.clear()
 
+# ── THE CURSOR MUST MOVE: never contact the same key twice in one turn ───────
+# A stalling block escalates through order[attempt+1], order[attempt+2]… and then, when it
+# fails, the outer loop stepped `attempt` by exactly ONE — sending the next block straight back
+# over keys it had just tried. Captured with GEMINI_DEBUG=1 against the live pool: 12001ms, 8
+# attempts, ~3 distinct keys of 104, key83 contacted three times. The pool was healthy; the walk
+# simply never reached it. Same apology as the deadline bug, third distinct cause.
+#
+# Every key stalls here, so the walk is forced to keep moving: what is asserted is that each
+# attempt lands on a key it has NOT used before.
+llm._cooldown.clear()
+_saved = llm._TURN_GIVEUP_MS
+llm._TURN_GIVEUP_MS = 3000
+res, c = drive([_Resp([], stall=STALL_S)] * 40)
+seen_keys = [k for k in c.calls if k]
+eq(len(seen_keys), len(set(seen_keys)),
+   f"no key is contacted twice in one turn (tried {len(seen_keys)}, "
+   f"{len(set(seen_keys))} distinct: {seen_keys})")
+eq(len(set(seen_keys)) >= 3, True,
+   f"…and the walk reaches into the pool rather than circling (got {len(set(seen_keys))})")
+llm._TURN_GIVEUP_MS = _saved
+llm._cooldown.clear()
+
+# The same, with fast 429s rather than stalls — the error-replacement arm advances the cursor too.
+res, c = drive([_Resp([], status=429)] * 30 + [sse_ok])
+keys_429 = [k for k in c.calls if k]
+eq(len(keys_429), len(set(keys_429)),
+   f"a 429 cascade also never re-tries a key ({len(keys_429)} tried, "
+   f"{len(set(keys_429))} distinct)")
+llm._cooldown.clear()
+
 # ── THE BLOCKING PATH: a transport failure must not abandon the pool ─────────
 # /api/turn and the dryrun harness both use _generate(), not _generate_stream(). Its sequential
 # walk did `resp = await client.post(...)` unguarded, so ONE httpx ReadTimeout raised straight
@@ -226,13 +257,30 @@ c = _Boom(TimeoutError("read timed out"), 10_000)
 res = drive_blocking(c)
 eq(isinstance(res, RuntimeError), True,
    f"a wholly unreachable pool raises the walk's own error (got {type(res).__name__}: {res})")
-# …and it is BOUNDED. Surviving transport errors means the walk no longer dies on the first one,
-# so without a ceiling it would grind through every key in both passes — measured at 67s against
-# a throttled pool, which no caller waits out. The stream path has always had this backstop;
-# this path had none until the same failure showed up on it.
-eq(len(c.calls) <= llm._MAX_KEYS_PER_TURN + 2, True,
-   f"a dead pool gives up inside the key ceiling, not after all {len(llm._KEYS)} "
-   f"(tried {len(c.calls)}, ceiling {llm._MAX_KEYS_PER_TURN})")
+# …and it is BOUNDED BY TIME — measured at 67s against a throttled pool before this, which no
+# caller waits out. Not by a key count: a 429 on this sequential path comes back in ~170ms, and
+# capping the walk at 20 of 104 made a throttled pool give up in 3.4s and apologise while keys
+# that would have answered went untried. Cheap failures must not consume the budget.
+_saved_turn = llm._TURN_GIVEUP_MS
+llm._TURN_GIVEUP_MS = 300
+c = _Boom(TimeoutError("read timed out"), 10_000)
+t0 = time.monotonic()
+res = drive_blocking(c)
+spent = time.monotonic() - t0
+eq(isinstance(res, RuntimeError), True, "a dead pool still raises the walk's own error")
+eq(spent < 3.0, True, f"…inside the whole-turn budget, not after every key ({spent:.1f}s)")
+llm._TURN_GIVEUP_MS = _saved_turn
+llm._cooldown.clear()
+
+# A pool that fails FAST must be walked to the END — that is the whole point of holding 104
+# keys. With instant rejections nothing has consumed the time budget, so no key may go untried:
+# both passes, every key. (This file runs with 8 keys, so "deep" means 16 attempts, not 200 —
+# the assertion is scaled to the pool rather than to a number that only holds in production.)
+c = _Boom(OSError("429 rejected instantly"), 10_000)
+drive_blocking(c)
+eq(len(c.calls) >= len(llm._KEYS) * 2, True,
+   f"instant rejections are cheap, so every key is tried in both passes "
+   f"(tried {len(c.calls)} of {len(llm._KEYS)} keys x2)")
 llm._cooldown.clear()
 
 # ── report ───────────────────────────────────────────────────────────────────
