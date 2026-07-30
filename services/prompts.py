@@ -469,6 +469,21 @@ def _known_block(sc: dict, ctx: dict) -> str:
             "they say a word. NEVER ask for any of it. Use it.\n" + rows)
 
 
+def _num_guide_for(sc: dict, lang: str) -> str:
+    """How to write numbers — which depends entirely on whether they are spoken or read.
+
+    _NUM_GUIDE exists because a bare "8400" is mispronounced by the voice, so it demands every
+    number be spelled out and forbids leaving digits in a reply. On WhatsApp that is exactly
+    backwards: nobody types "eight thousand four hundred rupees", and the chat scenario was
+    getting the speech rules verbatim."""
+    if sc.get("chat"):
+        return ("HOW YOU WRITE NUMBERS — this is TEXT, so write them the way people type:\n"
+                "₹35,000 and 9 am and 3-4 months as digits, never spelled out. Keep the ₹ "
+                "symbol. Reply in the same script the {lname} above names, but numerals stay "
+                "numerals.").replace("{lname}", LANG_NAME[lang])
+    return "HOW YOU SPEAK NUMBERS AND WORDS:\n" + _NUM_GUIDE[lang]
+
+
 def _context(sc: dict, lang: str) -> dict:
     ctx = dict(sc.get("known") or {})
     # LANGUAGE-CORRECT KNOWN VALUES. `branch_hi` = "जुबली हिल्स" sat unused beside branch =
@@ -526,8 +541,7 @@ Never greet or introduce yourself again. Continue from whatever they say next.
 
 {_LANG_RULE.format(lname=lname, who=who, exemplars=_LENGTH_EXEMPLARS[lang], offtopic=_OFFTOPIC_LINE[lang])}
 
-HOW YOU SPEAK NUMBERS AND WORDS:
-{_NUM_GUIDE[lang]}
+{_num_guide_for(sc, lang)}
 
 {_fmt(sc['facts'], ctx)}
 

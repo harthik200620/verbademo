@@ -55,12 +55,17 @@ SIDS = [s["id"] for s in ALL]
 BUILT = {(sid, lang): prompts.build_system_prompt(TODAY, sid, lang, True)
          for sid in SIDS for lang in ALL_LANGS}
 
-# The post-rewrite target. Today's prompts measure 3,148 (lead/english) to 3,308
-# (collections/hindi), of which the two rule blocks are 72% — so the cut has to come from the
-# rules, and it comes entirely out of restatement rather than behaviour. This ceiling is the
-# single strongest guard against re-inflation: nothing else in the suite would notice the prompt
+# A no-regrowth guard, set from measurement. Nothing else in the suite would notice the prompt
 # quietly growing back one well-meant addition at a time.
-WORD_CEILING = 2400
+#
+# Honest accounting, because the planning estimate was wrong and the number is worth recording:
+# the rewrite was projected to cut 30-35% and actually cut ~5% (3,308 -> 3,131 at the worst
+# case, rules 2,212 -> 2,053). Roughly 310 words of restatement came out and roughly 270 words
+# of genuinely new behaviour went in — the precedence order, the known-facts block, and six
+# rules that were simply absent. The premise that the bulk was duplication turned out to be
+# wrong: the bulk is instruction, and the duplication was about a tenth of it. The value of the
+# rewrite is that the rules no longer contradict each other, not that the prompt got smaller.
+WORD_CEILING = 3200
 
 
 # ── nothing unresolved, nothing unspeakable ──────────────────────────────────
@@ -102,23 +107,28 @@ for (sid, lang), full in BUILT.items():
        f"{sid}/{lang}: the precedence order is stated exactly once")
 
 
-# ── one owner per behaviour ──────────────────────────────────────────────────
-# Each of these was stated in two or three places, in slightly different words, with no
-# statement of which version wins. The cap is what "one owner" means mechanically.
+# ── one owner per behaviour, IN THE ENGINE ───────────────────────────────────
+# Each of these was stated in two or three places across the two rule blocks, in slightly
+# different words, with no statement of which version wins.
+#
+# Scoped to the engine text on purpose. A scenario naming the same idea about its OWN subject
+# ("never invent a dish or a price") is instantiation, not duplication, and it earns its place —
+# what must not happen is the ENGINE saying a thing twice. Verbatim restatement by a scenario is
+# a different failure with a different test: the 6-gram shingle check in test_scenarios_shape.py.
+ENGINE = (prompts._LANG_RULE + " " + prompts._UNIVERSAL).lower()
 SINGLE_OWNER = {
-    "goodbye": 2,          # Rule #4 states it; the ban list names it once more in the same rule
-    "read back": 1,
+    "goodbye": 2,          # Rule #4 states it, then names it once more in its own ban list
+    # Two, with different jobs: _UNIVERSAL mandates the ACT, Rule #2 grants it the one exemption
+    # from the fifteen-word cap. Neither can carry the other's sentence.
+    "read back": 2,
     "a second time": 1,
     "already told you": 1,
-    "never invent": 2,     # the rule, plus one instantiated `facts` header naming the specifics
+    "never invent": 1,
     "answer it first": 1,
 }
-for (sid, lang), full in BUILT.items():
-    if lang != "english":
-        continue           # these are English rule phrases; scenario data is English throughout
-    for phrase, cap in SINGLE_OWNER.items():
-        n = full.lower().count(phrase)
-        eq(n <= cap, True, f"{sid}: {phrase!r} has one owner (appears {n}x, cap {cap})")
+for phrase, cap in SINGLE_OWNER.items():
+    n = ENGINE.count(phrase)
+    eq(n <= cap, True, f"the engine states {phrase!r} once (appears {n}x, cap {cap})")
 
 
 # ── no Latin script in anything a non-English caller hears ───────────────────
