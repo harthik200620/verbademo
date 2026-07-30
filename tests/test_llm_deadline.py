@@ -261,15 +261,24 @@ eq(isinstance(res, RuntimeError), True,
 # caller waits out. Not by a key count: a 429 on this sequential path comes back in ~170ms, and
 # capping the walk at 20 of 104 made a throttled pool give up in 3.4s and apologise while keys
 # that would have answered went untried. Cheap failures must not consume the budget.
-_saved_turn = llm._TURN_GIVEUP_MS
-llm._TURN_GIVEUP_MS = 300
+#
+# The budget is this path's OWN — _HTTP_TURN_GIVEUP_MS, not the voice one. Wiring it to
+# _TURN_GIVEUP_MS made every live chat turn die at exactly 12.5s where the unbounded walk it
+# replaced had been answering at 8-27s, so the two are deliberately separate constants.
+_saved_turn = llm._HTTP_TURN_GIVEUP_MS
+llm._HTTP_TURN_GIVEUP_MS = 300
 c = _Boom(TimeoutError("read timed out"), 10_000)
 t0 = time.monotonic()
 res = drive_blocking(c)
 spent = time.monotonic() - t0
 eq(isinstance(res, RuntimeError), True, "a dead pool still raises the walk's own error")
 eq(spent < 3.0, True, f"…inside the whole-turn budget, not after every key ({spent:.1f}s)")
-llm._TURN_GIVEUP_MS = _saved_turn
+llm._HTTP_TURN_GIVEUP_MS = _saved_turn
+# The chat path must be given MORE room than the voice path, never the same: an apology at 12s
+# is the right answer to a person holding a phone and the wrong one to a chat client.
+eq(llm._HTTP_TURN_GIVEUP_MS > llm._TURN_GIVEUP_MS, True,
+   f"the chat budget exceeds the voice budget ({llm._HTTP_TURN_GIVEUP_MS}ms vs "
+   f"{llm._TURN_GIVEUP_MS}ms)")
 llm._cooldown.clear()
 
 # A pool that fails FAST must be walked to the END — that is the whole point of holding 104

@@ -225,18 +225,19 @@ async def _generate(contents: list, scenario: str, lang: str,
     # The streaming twin has had a whole-turn backstop since the deadline fix; this path had
     # none, and walked all 104 keys across BOTH passes however long that took — measured at 67s
     # against a throttled pool. Guarding the transport error above made that worse, because the
-    # walk now survives failures it used to die on. A caller will not hold for a minute: bound
-    # the walk, then let the error path speak. Same budget as the stream, same reason.
-    hard_deadline = time.monotonic() + _TURN_GIVEUP_MS / 1000
+    # walk now survives failures it used to die on. So it is bounded — but on ITS OWN budget
+    # (see _HTTP_TURN_GIVEUP_MS): sharing the voice one killed every chat turn at exactly 12.5s.
+    hard_deadline = time.monotonic() + _HTTP_TURN_GIVEUP_MS / 1000
 
     def _key_timeout() -> float:
         """How long ONE key may hold this turn.
 
-        The shared client reads for 12s and the whole-turn budget is also 12s, so a single
-        stalled key consumed the entire walk and it gave up having tried exactly one key of
-        104 — the original deadline bug reproduced on this path, by its own defaults rather
-        than by an off-by-one. A per-key budget must sit well UNDER the turn budget or the walk
-        cannot walk. Clamped to what is actually left, so the last key never overruns the turn."""
+        The shared client reads for 12s, so with no per-request timeout a single stalled key
+        consumed the whole walk and it gave up having tried exactly one key of 104 — the original
+        deadline bug reproduced on this path, by its own defaults rather than by an off-by-one.
+        A per-key budget must sit well UNDER the turn budget or the walk cannot walk, and that
+        matters most against a TPM-throttled free tier, where an over-quota key hangs instead of
+        rejecting. Clamped to what is left, so the last key never overruns the turn."""
         return max(0.5, min(_TTFT_GIVEUP_MS / 1000, hard_deadline - time.monotonic()))
 
     def _body_for(key_idx: int) -> tuple[str, dict]:
@@ -396,6 +397,16 @@ _TTFT_GIVEUP_MS = _int_env("GEMINI_TTFT_GIVEUP_MS", 4500)
 # ration a healthy one. Anything under ~10s here starts cutting off turns that would have
 # succeeded, which is the bug this replaced.
 _TURN_GIVEUP_MS = _int_env("GEMINI_TURN_GIVEUP_MS", 12000)
+# The SAME backstop for the blocking path would be a mistake, and briefly was one. 12s is chosen
+# for a person holding a phone: past it, the apology genuinely beats more silence. /api/turn is
+# not that caller — it serves the chat scenario, where a reply at 20s is worth far more than an
+# apology at 12s. Sharing the constant made every chat turn on the live host die at exactly
+# 12.5s, where the unbounded walk it replaced had been answering (slowly) at 8-27s.
+#
+# Why the walk needs the room: a TPM-throttled free-tier key does not 429, it HANGS. A rejection
+# costs ~170ms and lets the walk sprint, but a stall costs the full per-key budget, so 12s buys
+# only two or three keys out of 80 healthy ones. This is a runaway guard, not a latency target.
+_HTTP_TURN_GIVEUP_MS = _int_env("GEMINI_HTTP_TURN_GIVEUP_MS", 40000)
 _MAX_RACE = _int_env("GEMINI_MAX_RACE", 2)
 # Concurrency while REPLACING REJECTED keys, not while speculating. At 3 the p50 went
 # 2501ms -> 7483ms upstream; 1 keeps a 429 cascade moving without becoming a burst.
