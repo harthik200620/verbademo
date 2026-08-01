@@ -52,6 +52,69 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
+def _page_load_error(html: str) -> str:
+    """Run the SERVED page's script and return the first load-time error, or ''.
+
+    `GET / -> 200` proves the file was delivered, not that it works. This is the same check
+    tests/test_page_loads.py makes; it lives here too so a deploy that breaks the client fails
+    loudly instead of printing LIVE. Returns '' when node is unavailable — the offline suite is
+    the authority, this is the last line of defence."""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+    if not node or not scripts:
+        return ""
+    stubs = (
+        "const _el=()=>({style:{},classList:{add(){},remove(){},toggle(){}},addEventListener(){},"
+        "querySelectorAll:()=>[],querySelector:()=>null,appendChild(){},remove(){},dataset:{},"
+        "textContent:'',innerHTML:'',value:'',checked:false,disabled:false,focus(){},"
+        "scrollTo(){}});\n"
+        "globalThis.document={getElementById:_el,body:{dataset:{},appendChild(){}},"
+        "addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null,createElement:_el,"
+        "hidden:false,visibilityState:'visible'};\n"
+        "globalThis.window=globalThis;\n"
+        "globalThis.location={search:'',protocol:'https:',host:'x',href:''};\n"
+        "globalThis.navigator={mediaDevices:{},userAgent:'node'};\n"
+        "globalThis.performance={now:()=>0};\n"
+        "globalThis.fetch=()=>Promise.reject(new Error('stub'));\n"
+        "globalThis.WebSocket=function(){}; globalThis.AudioContext=function(){};\n"
+        "globalThis.webkitAudioContext=function(){};\n"
+        "globalThis.Audio=function(){return {play:()=>Promise.reject()}};\n"
+        "globalThis.URL={createObjectURL:()=>'',revokeObjectURL(){}};\n"
+        "globalThis.localStorage={getItem:()=>null,setItem(){}};\n"
+        "globalThis.requestAnimationFrame=()=>0;\n"
+        "globalThis.matchMedia=()=>({matches:false,addEventListener(){}});\n"
+    )
+    path = Path(tempfile.gettempdir()) / "_verba_deploy_check.js"
+    try:
+        path.write_text(stubs + "\n".join(scripts), encoding="utf-8")
+        r = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            return ""
+        return next((ln.strip() for ln in (r.stderr or "").splitlines() if "Error" in ln),
+                    (r.stderr or "").strip()[:160] or "non-zero exit")
+    except Exception:
+        return ""
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+# Everything below runs at IMPORT. There is no main() guard by design — the file is a script —
+# but that means `import deploy_render` DEPLOYS. Refuse to do that from an import, because it is
+# a silent production action triggered by something that reads like inspection. (Learned by
+# importing it to unit-test _page_load_error above, which shipped a build.)
+if __name__ != "__main__":
+    raise ImportError(
+        "deploy_render.py deploys on import — run it as a script, not an import. "
+        "Its helpers are safe to copy; the module body is not.")
+
 KEY = (os.getenv("RENDER_API_KEY") or "").strip()
 if not KEY:
     die("RENDER_API_KEY is not set. Create one at\n"
@@ -190,7 +253,18 @@ with httpx.Client(timeout=60, headers=H) as c:
                 s = httpx.get(f"{url}/api/scenarios", timeout=60).json()
                 total = sum(len(t.get("items") or []) for t in s.get("tabs", []))
                 print(f"    /api/scenarios {total} scenarios across {len(s.get('tabs', []))} tabs")
-                print(f"    /              {httpx.get(url, timeout=60).status_code}")
+                page = httpx.get(url, timeout=60)
+                print(f"    /              {page.status_code}")
+                # A 200 serving a DEAD script is exactly what shipped once: one temporal dead
+                # zone violation at the top level abandons the whole <script> block, so the page
+                # renders, looks fine, and every control is inert. Status codes cannot see that.
+                # Run the served page the way tests/test_page_loads.py does.
+                bad = _page_load_error(page.text)
+                print(f"    page script    {'loads' if not bad else 'THROWS — ' + bad}")
+                if bad:
+                    die(f"The deploy is live but the CLIENT IS DEAD: {bad}\n"
+                        f"  Nothing on the page will respond. Fix and redeploy — do not report "
+                        f"this as working.")
                 print(f"\n  LIVE: {url}")
                 sys.exit(0)
         except Exception:

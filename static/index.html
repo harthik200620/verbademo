@@ -1297,7 +1297,12 @@ const BARGE_SUSTAIN_MS=350;
    direction that costs a feature, never in the direction that breaks a call. */
 const ECHO_K=2.2, ECHO_MIN_FRAMES=25;
 let echoSum=0, echoFrames=0, echoSuspected=true, echoTold=false;
-let lastNf=NF_MIN;                 // the room floor, exported from onPcm — see echoVerdict
+// The room floor, exported from onPcm — see echoVerdict. MUST NOT initialise from NF_MIN:
+// that const is declared ~80 lines below this one, and reading it here is a temporal dead zone
+// violation that THROWS at load and kills this entire <script> block. It shipped that way once
+// and every control on the page went dead. 0 is equivalent anyway — echoVerdict floors its
+// argument with Math.max(nf, NF_MIN) before using it.
+let lastNf=0;
 function echoSample(rms){ echoSum+=rms; echoFrames++; }
 function echoVerdict(nf){
   if(echoFrames < ECHO_MIN_FRAMES) return;            // too little of the reply to judge
