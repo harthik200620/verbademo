@@ -76,10 +76,17 @@ ELEVEN_VOICE_TE = _clean("ELEVENLABS_VOICE_ID_TE") or _ENV_PRIMARY_VOICE        
 ELEVEN_MODEL = _clean("ELEVENLABS_MODEL_ID", "eleven_v3")            # Telugu (v3-only language)
 # EN/HI ride multilingual_v2: steadier pronunciation (Indian place names!) and faster than v3.
 ELEVEN_MODEL_ENHI = _clean("ELEVENLABS_MODEL_ID_ENHI", "eleven_multilingual_v2")
+# Telugu override, and the DEFAULT STAYS eleven_v3 on purpose — it is the only model ElevenLabs
+# documents as speaking Telugu, so a lost .env must not silently downgrade pronunciation.
+# Measured on one Telugu sentence with the same voice: v3 4857-7844ms, multilingual_v2 1237ms,
+# flash_v2_5 500ms. That is a 15x spread and it is the difference between a usable Telugu call
+# and dead air, so the faster model is worth trying — but only ears can say whether it actually
+# pronounces Telugu, which is why the experiment lives in the env and not in this default.
+ELEVEN_MODEL_TE = _clean("ELEVENLABS_MODEL_ID_TE") or ELEVEN_MODEL
 
 
 def _model_for(lang: str) -> str:
-    return ELEVEN_MODEL if (lang or "").lower() == "telugu" else ELEVEN_MODEL_ENHI
+    return ELEVEN_MODEL_TE if (lang or "").lower() == "telugu" else ELEVEN_MODEL_ENHI
 
 
 def _voice_for(lang: str) -> str:

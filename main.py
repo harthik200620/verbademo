@@ -178,7 +178,7 @@ _opening_cache: dict[str, dict] = {}
 _opening_inflight: dict[str, object] = {}
 
 
-async def _opening_audio(scenario: str, lng: str, disclose: bool = True):
+async def _opening_audio(scenario: str, lng: str, disclose: bool = False):
     """Cached per (provider, voice, model, scenario, lang, disclose). The in-flight map is a
     dedup: concurrent synths of the SAME line trip ElevenLabs' free-tier 2-concurrent cap and
     produce real 429s right at call pickup, which is the worst possible moment."""
@@ -215,7 +215,7 @@ async def _opening_audio(scenario: str, lng: str, disclose: bool = True):
 
 @app.post("/api/opening")
 async def api_opening(password: str = Form(default=""), scenario: str = Form(default="lead"),
-                      lang: str = Form(default=""), disclose: str = Form(default="1")):
+                      lang: str = Form(default=""), disclose: str = Form(default="0")):
     sc = scenario_of(scenario)
     lng = norm_lang(lang, sc["id"])
     disc = disclose not in ("0", "false", "False", "")
@@ -303,7 +303,7 @@ def _split_for_tts(text: str) -> list[str]:
 def _new_state() -> dict:
     return {
         "session_id": uuid.uuid4().hex, "contents": [], "scenario": "lead", "lang": "",
-        "disclose": True, "goal": {}, "dnc": False, "switch_streak": 0, "switch_to": "",
+        "disclose": False, "goal": {}, "dnc": False, "switch_streak": 0, "switch_to": "",
         "turn": 0, "mic_frames": None, "stt_stream": None, "pending_text": None,
     }
 
@@ -518,12 +518,12 @@ async def _process_text(ws: WebSocket, state: dict, text: str, silent: bool = Fa
     # The first line of every conversation is fixed and pre-synthesized — no LLM round-trip.
     # The prompt says it was already spoken, so the model continues from it.
     if not state["contents"]:
-        intro = opener_for(sid, lng, state.get("disclose", True))
+        intro = opener_for(sid, lng, state.get("disclose", False))
         state["contents"].append({"role": "user", "parts": [{"text": text}]})
         state["contents"].append({"role": "model", "parts": [{"text": intro}]})
         await _send(ws, {"type": "assistant_text", "role": "assistant", "text": intro})
         db.log_turn(sid_sess, "assistant", intro)
-        audio_b64, mime = await _opening_audio(sid, lng, state.get("disclose", True))
+        audio_b64, mime = await _opening_audio(sid, lng, state.get("disclose", False))
         if audio_b64:
             audio = base64.b64decode(audio_b64)
             await _send(ws, {"type": "tts_audio_meta", "mime": mime, "bytes": len(audio)})
@@ -578,7 +578,7 @@ async def _process_text(ws: WebSocket, state: dict, text: str, silent: bool = Fa
     try:
         assistant_text = await llm.gemini_turn(
             state["contents"], text, _handlers_for(sid, captured, on_row, on_goal),
-            scenario=sid, lang=lng, disclose=state.get("disclose", True),
+            scenario=sid, lang=lng, disclose=state.get("disclose", False),
             # stream=True regardless of whether the TTS socket came up: the SSE transport's
             # value is tail protection, which is worth having even with nothing to feed.
             stream=True, on_clause=(stream.feed if stream is not None else None),
@@ -812,7 +812,7 @@ async def api_turn(
     password: str = Form(default=""),
     scenario: str = Form(default="lead"),
     lang: str = Form(default=""),
-    disclose: str = Form(default="1"),
+    disclose: str = Form(default="0"),
     audio: UploadFile = File(default=None),
 ):
     """Stateless turn — the client carries the conversation history."""
@@ -893,7 +893,10 @@ async def api_turn(
     timing = {"stt_ms": stt_ms, "llm_ms": llm_ms, "tts_ms": tts_ms,
               "total_ms": round((time.perf_counter() - t_start) * 1000),
               "llm_attempts": llm.last_attempt_count, "served_by": llm.last_served_by,
-              "hedge_fired": llm.last_hedged, "cold": cold}
+              "hedge_fired": llm.last_hedged, "cold": cold,
+              # Which voice actually spoke, and whether it streamed. The WS path has always
+              # reported these and the HUD dropped them; this path never sent them at all.
+              "tts_provider": tts.active_provider(), "clause_stream": False}
     print(f"[timing] {timing['total_ms']}ms total | stt {stt_ms} | llm {llm_ms} "
           f"(x{timing['llm_attempts']} {timing['served_by']}) | tts {tts_ms} | cold={cold}")
 

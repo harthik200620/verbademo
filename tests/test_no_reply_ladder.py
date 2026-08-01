@@ -120,6 +120,18 @@ for (sid, lang), payload in NOTES.items():
        f"{sid}/{lang}: the close note names {tool!r}")
 
 
+# ── every rung restates the word cap ─────────────────────────────────────────
+# These arrive as the MOST RECENT turn, so they are the freshest instruction the model has —
+# fresher than Rule #2, which sits thousands of tokens back in the system prompt. HELP_NOTE
+# shipped saying "name two or three REAL things … then ask what they need" with no cap at all,
+# and the agent duly started talking too much. A note that asks for content must carry the limit
+# with it.
+for (sid, lang), payload in NOTES.items():
+    for key in MODEL_NOTES:
+        eq("UNDER 15 WORDS" in str(payload.get(key) or ""), True,
+           f"{sid}/{lang}: the {key!r} note restates the length cap")
+
+
 # ── the three follow-ups are three different instructions ────────────────────
 # Not three copies of "check they can hear you". The caller hears all three in about nine
 # seconds; identical intent three times over is worse than one.

@@ -163,7 +163,13 @@ for sid in SIDS:
         op = prompts.opener_for(sid, lang, True)
         eq(agent_name(sc, lang) in op, True, f"{sid}/{lang} opener names the agent")
         eq(business_name(sc, lang) in op, True, f"{sid}/{lang} opener names the business")
-        eq(prompts._DISCLOSE[lang] in op, True, f"{sid}/{lang} opener carries the AI disclosure")
+        eq(prompts._DISCLOSE[lang] in op, True,
+           f"{sid}/{lang} opener carries the AI disclosure when it is asked for")
+        # …and NOT otherwise. The default flipped off: it is a demo argument, not a requirement,
+        # and it padded six words onto the first line before the caller had heard anything.
+        # Answering honestly when ASKED is a separate, ungated instruction in _UNIVERSAL.
+        eq(prompts._DISCLOSE[lang] in prompts.opener_for(sid, lang), False,
+           f"{sid}/{lang} does not volunteer the disclosure by default")
 
 # feedback's flow tells the model its opener promised "under a minute". The Hindi opener did
 # not, so the model was defending a promise it never made.

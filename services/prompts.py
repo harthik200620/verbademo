@@ -379,37 +379,37 @@ ALWAYS TRUE, WHATEVER THE CALL:
 # ─────────────────────────────────────────────────────────────────────────────
 OPENERS = {
     "lead": {
-        "english": "Hi, this is Riya from Kanvas Media — am I speaking with Arjun? You just "
-                   "picked up our pricing guide, so I thought I'd call straight away.",
-        "hindi": "नमस्ते जी, मैं रिया बोल रही हूँ, कैनवस मीडिया से — क्या अर्जुन जी से बात हो "
-                 "रही है? आपने अभी हमारी प्राइसिंग गाइड ली थी, तो सोचा तुरंत कॉल कर लूँ।",
+        "english": "Hi, this is Riya from Kanvas Media — is that Arjun? You just took our "
+                   "pricing guide, so I called straight away.",
+        "hindi": "नमस्ते जी, मैं रिया, कैनवस मीडिया से — अर्जुन जी? आपने अभी प्राइसिंग गाइड ली, "
+                 "तो तुरंत कॉल कर लिया।",
         "telugu": "నమస్తే అండి, నేను రియా, కాన్వాస్ మీడియా నుంచి — అర్జున్ గారేనా? మీరు ఇప్పుడే "
                   "మా ప్రైసింగ్ గైడ్ తీసుకున్నారు, అందుకే వెంటనే కాల్ చేశాను.",
     },
     "coldcall": {
-        "english": "Hi, this is Neha calling for Aarav Design Studio — is that Sneha? I know "
-                   "this is out of the blue, I'll be quick.",
-        "hindi": "नमस्ते, मैं नेहा बोल रही हूँ, आरव डिज़ाइन स्टूडियो से — स्नेहा जी? पता है "
-                 "अचानक कॉल है, बस एक मिनट लूँगी।",
+        "english": "Hi, this is Neha from Aarav Design Studio — is that Sneha? Out of the "
+                   "blue, I know — I'll be quick.",
+        "hindi": "नमस्ते, मैं नेहा, आरव डिज़ाइन स्टूडियो से — स्नेहा जी? अचानक कॉल है, बस एक "
+                 "मिनट लूँगी।",
         "telugu": "నమస్తే, నేను నేహా, ఆరవ్ డిజైన్ స్టూడియో నుంచి — స్నేహా గారేనా? అకస్మాత్తుగా "
                   "కాల్ చేశాను, ఒక్క నిమిషమే.",
     },
     "winback": {
-        "english": "Hi, this is Simran from Glow & Co — is that Pooja? It's been a while "
-                   "since we saw you, so I wanted to check in.",
-        "hindi": "नमस्ते जी, मैं सिमरन बोल रही हूँ, ग्लो एंड को से — पूजा जी? बहुत दिन हो गए "
-                 "आपको देखे, तो सोचा हाल पूछ लूँ।",
+        "english": "Hi, this is Simran from Glow & Co — is that Pooja? It's been a while, so "
+                   "I wanted to check in.",
+        "hindi": "नमस्ते जी, मैं सिमरन, ग्लो एंड को से — पूजा जी? बहुत दिन हो गए, तो हाल पूछ "
+                 "लूँ।",
         "telugu": "నమస్తే అండి, నేను సిమ్రన్, గ్లో అండ్ కో నుంచి — పూజా గారేనా? చాలా రోజులైంది "
                   "మిమ్మల్ని చూసి, అందుకే కాల్ చేశాను.",
     },
     "feedback": {
-        "english": "Hi, this is Kavita from Sunrise Diagnostics — is that Mr Ramesh? Just one "
-                   "quick question about your visit, under a minute.",
+        "english": "Hi, this is Kavita from Sunrise Diagnostics — is that Mr Ramesh? One quick "
+                   "question, under a minute.",
         # "बस एक मिनट" is not decoration: feedback's flow tells the model its opener promised
         # the call takes under a minute. English and Telugu said so; Hindi did not, so on a
         # Hindi call the model was defending a promise it had never made.
-        "hindi": "नमस्ते जी, मैं कविता बोल रही हूँ, सनराइज़ डायग्नोस्टिक्स से — रमेश जी? आपकी "
-                 "पिछली जाँच के बारे में बस एक छोटा सा सवाल है, एक मिनट भी नहीं लगेगा।",
+        "hindi": "नमस्ते जी, मैं कविता, सनराइज़ डायग्नोस्टिक्स से — रमेश जी? जाँच के बारे में एक "
+                 "छोटा सवाल, एक मिनट लगेगा।",
         "telugu": "నమస్తే అండి, నేను కవిత, సన్‌రైజ్ డయాగ్నోస్టిక్స్ నుంచి — రమేష్ గారేనా? మీ "
                   "టెస్ట్ గురించి ఒక చిన్న ప్రశ్న, ఒక్క నిమిషం.",
     },
@@ -462,7 +462,11 @@ _DISCLOSE = {
 }
 
 
-def opener_for(sid: str, lang: str = "", disclose: bool = True) -> str:
+# Default OFF. The disclosure is a demo argument, not a requirement — and it padded an
+# already-long first line with six more words before the caller had heard a thing. The
+# checkbox still turns it on. Answering HONESTLY when asked is a separate, ungated
+# instruction in _UNIVERSAL and is unaffected by this.
+def opener_for(sid: str, lang: str = "", disclose: bool = False) -> str:
     sid = (sid or "").strip().lower()
     lang = norm_lang(lang, sid)
     line = (OPENERS.get(sid) or OPENERS["lead"])[lang]
@@ -575,7 +579,7 @@ def _context(sc: dict, lang: str) -> dict:
 
 
 def build_system_prompt(today_str: str, scenario: str = "", lang: str = "",
-                        disclose: bool = True) -> str:
+                        disclose: bool = False) -> str:
     sc = scenario_of(scenario)
     lang = norm_lang(lang, sc["id"])
     lname = LANG_NAME[lang]
@@ -655,68 +659,73 @@ RETRY_LINE = {
 # Only _CLOSE_NOTE may trip it. test_no_reply_ladder.py asserts exactly that, and pins the
 # predicate in llm.py too so a change at either end breaks loudly.
 # ─────────────────────────────────────────────────────────────────────────────
+# "two or three REAL things … then ask what they need", with no word cap restated, is why the
+# agent started talking too much. These notes arrive as the MOST RECENT turn, so they are the
+# freshest instruction the model has — fresher than Rule #2, which sits thousands of tokens back
+# in the system prompt. Every one of them now carries the cap explicitly, and this one asks for
+# TWO things, not three: three priced services plus a question cannot fit in fifteen words, so
+# asking for it guarantees the rule gets broken.
 HELP_NOTE = {
     "english": "(System note — not from the {who}: the line has been silent since you spoke and "
-               "they have not said one word yet. In ONE very short natural English sentence, say "
-               "what you can help them with — name two or three REAL things from YOUR FACTS, "
-               "never a description of them — then ask what they need. Never greet again, never "
-               "mention this note — reply with ONLY that sentence.)",
+               "they have not said one word yet. In ONE natural English sentence UNDER 15 WORDS, "
+               "name TWO real things you can help with, from YOUR FACTS — then ask which they "
+               "need. Never greet again, never mention this note — reply with ONLY that "
+               "sentence.)",
     "hindi": "(System note — not from the {who}: the line has been silent since you spoke and "
-             "they have not said one word yet. In ONE very short natural HINDI sentence, say what "
-             "you can help them with — name two or three REAL things from YOUR FACTS, never a "
-             "description of them — then 'किसमें मदद करूँ?'. Never greet again, never mention "
-             "this note — reply with ONLY that sentence.)",
+             "they have not said one word yet. In ONE natural HINDI sentence UNDER 15 WORDS, name "
+             "TWO real things you can help with, from YOUR FACTS — then 'किसमें मदद करूँ?'. Never "
+             "greet again, never mention this note — reply with ONLY that sentence.)",
     "telugu": "(System note — not from the {who}: the line has been silent since you spoke and "
-              "they have not said one word yet. In ONE very short natural TELUGU sentence, say "
-              "what you can help them with — name two or three REAL things from YOUR FACTS, never "
-              "a description of them — then 'ఏం సహాయం కావాలి అండి?'. Never greet again, never "
-              "mention this note — reply with ONLY that sentence.)",
+              "they have not said one word yet. In ONE natural TELUGU sentence UNDER 15 WORDS, "
+              "name TWO real things you can help with, from YOUR FACTS — then 'ఏం సహాయం కావాలి "
+              "అండి?'. Never greet again, never mention this note — reply with ONLY that "
+              "sentence.)",
 }
 
 REASK = {
-    "english": "(System note — not from the {who}: the line is silent. In ONE very short "
-               "natural English sentence, put your pending question again in fewer words — the "
+    "english": "(System note — not from the {who}: the line is silent. In ONE English sentence "
+               "UNDER 15 WORDS, put your pending question again in fewer words — the "
                "way a real caller would when the other person did not answer. Never the same "
                "line twice, never greet again, never mention this note — reply with ONLY that "
                "sentence.)",
-    "hindi": "(System note — not from the {who}: the line is silent. In ONE very short natural "
-             "HINDI sentence, put your pending question again in fewer words — the way a real "
+    "hindi": "(System note — not from the {who}: the line is silent. In ONE HINDI sentence UNDER "
+             "15 WORDS, put your pending question again in fewer words — the way a real "
              "caller would when the other person did not answer. Never the same line twice, "
              "never greet again, never mention this note — reply with ONLY that sentence.)",
-    "telugu": "(System note — not from the {who}: the line is silent. In ONE very short natural "
-              "TELUGU sentence, put your pending question again in fewer words — the way a real "
+    "telugu": "(System note — not from the {who}: the line is silent. In ONE TELUGU sentence UNDER "
+              "15 WORDS, put your pending question again in fewer words — the way a real "
               "caller would when the other person did not answer. Never the same line twice, "
               "never greet again, never mention this note — reply with ONLY that sentence.)",
 }
 
 CHECK_NOTE = {
-    "english": "(System note — not from the {who}: still nothing. In ONE very short natural "
-               "English sentence, check they can hear you — like a real caller would. Do NOT "
+    "english": "(System note — not from the {who}: still nothing. In ONE English sentence UNDER "
+               "15 WORDS, check they can hear you — like a real caller would. Do NOT "
                "repeat your question this time and do NOT end the call. Never the same line "
                "twice, never mention this note — reply with ONLY that sentence.)",
-    "hindi": "(System note — not from the {who}: still nothing. In ONE very short natural HINDI "
-             "sentence, check they can hear you — 'सुन पा रहे हैं जी?'. Do NOT repeat your "
+    "hindi": "(System note — not from the {who}: still nothing. In ONE HINDI sentence UNDER 15 "
+             "WORDS, check they can hear you — 'सुन पा रहे हैं जी?'. Do NOT repeat your "
              "question this time and do NOT end the call. Never the same line twice, never "
              "mention this note — reply with ONLY that sentence.)",
-    "telugu": "(System note — not from the {who}: still nothing. In ONE very short natural TELUGU "
-              "sentence, check they can hear you — 'వినిపిస్తోందా అండి?'. Do NOT repeat your "
+    "telugu": "(System note — not from the {who}: still nothing. In ONE TELUGU sentence UNDER 15 "
+              "WORDS, check they can hear you — 'వినిపిస్తోందా అండి?'. Do NOT repeat your "
               "question this time and do NOT end the call. Never the same line twice, never "
               "mention this note — reply with ONLY that sentence.)",
 }
 
 LAST_NOTE = {
     "english": "(System note — not from the {who}: silent a third time, and this is your last "
-               "try before the call ends. In ONE very short natural English sentence, ask warmly "
+               "try before the call ends. In ONE natural English sentence UNDER 15 WORDS, ask warmly "
                "whether now is a bad time. Do NOT say goodbye and do NOT end the call — that "
                "happens on the next turn, not this one. Never mention this note — reply with "
                "ONLY that sentence.)",
     "hindi": "(System note — not from the {who}: silent a third time, and this is your last try "
-             "before the call ends. In ONE very short natural HINDI sentence, ask warmly whether "
+             "before the call ends. In ONE natural HINDI sentence UNDER 15 WORDS, ask warmly whether "
              "now is a bad time — 'अभी टाइम ठीक नहीं है क्या जी?'. Do NOT say goodbye and do NOT "
              "end the call — that happens on the next turn, not this one. Never mention this "
              "note — reply with ONLY that sentence.)",
     "telugu": "(System note — not from the {who}: silent a third time, and this is your last try "
-              "before the call ends. In ONE very short natural TELUGU sentence, ask warmly "
+              "before the call ends. In ONE natural TELUGU sentence UNDER 15 WORDS, ask warmly "
               "whether now is a bad time — 'ఇప్పుడు కుదరట్లేదా అండి?'. Do NOT say goodbye and do "
               "NOT end the call — that happens on the next turn, not this one. Never mention this "
               "note — reply with ONLY that sentence.)",
@@ -724,14 +733,14 @@ LAST_NOTE = {
 
 _CLOSE_NOTE = {
     "english": "(System note — not from the {who}: they have gone quiet and the call must end "
-               "now. In ONE short polite English sentence, leave the essential detail and close "
+               "now. In ONE polite English sentence UNDER 15 WORDS, leave the essential detail and close "
                "the call, and CALL {tool} with notes='no response on call'. Never mention this "
                "note.)",
     "hindi": "(System note — not from the {who}: they have gone quiet and the call must end now. "
-             "In ONE short polite HINDI sentence, leave the essential detail and close the call, "
+             "In ONE polite HINDI sentence UNDER 15 WORDS, leave the essential detail and close the call, "
              "and CALL {tool} with notes='no response on call'. Never mention this note.)",
     "telugu": "(System note — not from the {who}: they have gone quiet and the call must end now. "
-              "In ONE short polite TELUGU sentence, leave the essential detail and close the "
+              "In ONE polite TELUGU sentence UNDER 15 WORDS, leave the essential detail and close the "
               "call, and CALL {tool} with notes='no response on call'. Never mention this note.)",
 }
 

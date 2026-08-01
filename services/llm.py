@@ -216,7 +216,7 @@ def cooling_count() -> int:
 
 async def _generate(contents: list, scenario: str, lang: str,
                     force_tool: bool = False, hedge: bool = True,
-                    disclose: bool = True) -> dict:
+                    disclose: bool = False) -> dict:
     global _fresh_idx, _other_idx, last_attempt_count, last_served_by, last_hedged
     if not _KEYS:
         raise RuntimeError("No Gemini API key set")
@@ -468,7 +468,7 @@ async def _sse_pump(key_idx: int, model: str, body: dict, out: asyncio.Queue, ta
 
 async def _generate_stream(contents: list, scenario: str, lang: str,
                            force_tool: bool = False, on_clause=None,
-                           disclose: bool = True) -> dict:
+                           disclose: bool = False) -> dict:
     """Streaming twin of _generate(): same inputs, and deliberately the SAME return shape.
 
     The only difference is that complete clauses are handed to `on_clause` the moment they are
@@ -1076,7 +1076,7 @@ def _apply_identity(sid: str, tool: str, args: dict) -> None:
 
 
 async def gemini_turn(contents: list, user_text: str, handlers: dict, scenario: str,
-                      lang: str = "", disclose: bool = True, on_clause=None,
+                      lang: str = "", disclose: bool = False, on_clause=None,
                       stream: bool = False) -> str:
     """Run one caller turn. `handlers` maps tool name → async fn(args) -> row|None.
     Returns the agent's reply text.

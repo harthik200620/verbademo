@@ -399,7 +399,7 @@ footer a{color:var(--brand);text-decoration:none}
         <span class="vu" aria-hidden="true"><i></i><u></u><b></b></span>
         <span id="sensval" style="min-width:62px">normal</span>
       </label>
-      <label><input type="checkbox" id="discl" checked /> Say it's an AI up front</label>
+      <label><input type="checkbox" id="discl" /> Say it's an AI up front</label>
       <label title="Talk over the agent whenever you like. It listens for its own voice coming back through your speaker and only activates when it is safe — so on speakerphone it waits, and on headphones it turns itself on."><input type="checkbox" id="bargeToggle" checked /> 🎧 Interrupt me <span id="bargeState" class="bstate">waiting for headphones</span></label>
     </div>
     <div class="typer">
@@ -450,7 +450,7 @@ let recog=null, pendingAudioMime=null, currentAudio=null, typingEl=null;
 let httpMode=false, httpHistory=[];
 let noReplyTimer=null, noReplyRung=0, endingCall=false, protectOpener=false;
 let voiceHeldSince=0, brokenRun=0;
-let sessionScenario='lead', sessionLang='english', disclose=true;
+let sessionScenario='lead', sessionLang='english', disclose=false;
 let NOTES={help:'',reask:'',check:'',last:'',close:'',ending:''};
 const adminPw='';
 
@@ -818,7 +818,14 @@ function onMetrics(m){
   const sorted=hudTurns.map(t=>t.total).sort((a,b)=>a-b);
   const p50=sorted[Math.floor(sorted.length/2)]||0;
   $('hudSess').textContent = hudTurns.length+' turns · median '+(p50/1000).toFixed(2)+'s';
-  $('hudServed').textContent = det.served_by ? ('· '+det.served_by) : '';
+  // The two fields that would have shown the Telugu regression at a glance. The server has
+  // always sent both and the HUD silently dropped them, so "latency is up" arrived as an
+  // adjective instead of a cause. clause_stream=off means the whole reply was synthesised
+  // before a single byte reached the browser.
+  const route = det.tts_provider
+    ? ' · '+det.tts_provider+(det.clause_stream===false ? ' (no stream)' : '')
+    : '';
+  $('hudServed').textContent = (det.served_by ? ('· '+det.served_by) : '') + route;
   const bars=$('hudBars'); bars.innerHTML='';
   hudTurns.slice().reverse().forEach((t,i)=>{
     const sum=Math.max(1,t.stt+t.llm+t.tts);
@@ -1121,7 +1128,8 @@ async function postTurn(opts){
   if(Array.isArray(d.history)) httpHistory=d.history;
   if(d.timing) onMetrics({derived:{stt_ms:d.timing.stt_ms,llm_ms:d.timing.llm_ms,
     tts_ms:d.timing.tts_ms,server_ms:d.timing.total_ms},
-    detail:{served_by:d.timing.served_by,hedge_fired:d.timing.hedge_fired,cold:d.timing.cold}});
+    detail:{served_by:d.timing.served_by,hedge_fired:d.timing.hedge_fired,cold:d.timing.cold,
+            tts_provider:d.timing.tts_provider,clause_stream:d.timing.clause_stream}});
   waitingForServer=false;
   if(d.audio_b64){
     playAudio(b64toBlob(d.audio_b64,d.audio_mime));
