@@ -144,14 +144,53 @@ def body(opener: str, label: str) -> str:
     return _html.split(opener, 1)[1].split("\n}", 1)[0]
 
 
-# ── one ladder, not two ──────────────────────────────────────────────────────
+# ── one ladder, one door ─────────────────────────────────────────────────────
 for name, opener in (("handleNoReply", "async function handleNoReply(){"),
                      ("onBrokenInput", "function onBrokenInput(){")):
     b = body(opener, name)
-    eq("stepLadder()" in b, True, f"{name} goes through the one ladder function")
     for key in NOTE_KEYS:
         eq(f"NOTES.{key}" in b, False,
            f"{name} does not inline the ladder — it must not name NOTES.{key}")
+
+# handleNoReply is the ONLY caller of stepLadder, and it is guarded. onBrokenInput is not a
+# caller at all: an empty transcript is speech we failed to hear, not silence, and charging it a
+# rung escalated a caller toward a hang-up for speaking. With no wait in front of that path,
+# three STT misses reached the close rung and hung up inside a second.
+_hnr = body("async function handleNoReply(){", "handleNoReply")
+eq("nudgeBlocked()" in _hnr, True, "handleNoReply asks the guard before stepping")
+eq("stepLadder()" in _hnr, True, "…and is the door to the ladder")
+_obi = body("function onBrokenInput(){", "onBrokenInput")
+eq("stepLadder()" in _obi, False, "an empty transcript does not consume a ladder rung")
+eq("armNoReply(" in _obi, True, "…it re-arms and lets the guarded timer decide")
+eq("clearAudioQueue" in _obi, False,
+   "…and does not truncate the PREVIOUS reply — the server returns before any TTS on that path")
+
+
+# ── the guard ────────────────────────────────────────────────────────────────
+# The old test was `waitingForServer||playing||capturing`, and all three are false while a
+# caller is mid-syllable: `capturing` needs 60ms of NET onset run on top of a 200ms mute tail,
+# so there was a ~300ms window in which the ladder fired a nudge over someone who was speaking.
+eq("waitingForServer||playing||capturing" in _html, False,
+   "the old three-flag guard is gone — all three were false while a caller was mid-syllable")
+_guard = body("function nudgeBlocked(){", "nudgeBlocked")
+for term in ("waitingForServer", "playing", "capturing", "audioBusy", "callerVoiceAt"):
+    eq(term in _guard, True, f"the nudge guard tests {term}")
+_busy = body("function audioBusy(){", "audioBusy")
+for term in ("audioQ", "qActive", "pcmNodes", "pcmPendingSamples"):
+    eq(term in _busy, True, f"audioBusy counts {term} as the agent still having audio to deliver")
+
+# The ladder must never cancel audio. It doesn't need to, because it never dispatches while
+# audio exists — and cancelling would let a nudge truncate the farewell sayFixed queues, which
+# is the exact bug the call_ended path was written to prevent.
+for name, opener in (("stepLadder", "function stepLadder(){"),
+                     ("sendSilent", "async function sendSilent(note){")):
+    eq("clearAudioQueue" in body(opener, name), False,
+       f"{name} never cancels audio — it refuses to dispatch over it instead")
+
+# callerVoiceAt must not be pinned by the agent's own voice, or the guard blocks forever on a
+# speakerphone the echo verdict misjudges.
+eq("if(!playing) callerVoiceAt=" in _html, True,
+   "caller-presence is stamped only while the agent is NOT speaking")
 
 # The dead state is gone. `closeRequested` was only ever "am I at rung 3?", which the rung
 # integer now says, and two names for one fact is how the resets got missed.
@@ -211,6 +250,55 @@ if None not in (_first, _again, _cfirst, _cagain):
     # turns an unanswered call into a two-minute one.
     eq(_first + 3 * _again <= 20000, True, "the whole ladder fits inside twenty seconds")
 
+# ── the guard's geometry ─────────────────────────────────────────────────────
+# Relationships, not literals: a retune passes, an inversion fails.
+_recent = const("RECENT_VOICE_MS")
+_hold = const("RECENT_VOICE_MAX_HOLD_MS")
+_poll = const("NO_REPLY_POLL_MS")
+_mute = const("MUTE_TAIL_MS")
+_onset = const("ONSET_SUSTAIN_MS")
+_silend = const("SILENCE_END_MS")
+_hard = const("HARD_QUIET_MS")
+if None not in (_recent, _hold, _poll, _mute, _onset, _silend, _hard, _again):
+    eq(_recent > _mute + _onset, True,
+       "recent-voice covers the window in which capture CANNOT start")
+    eq(_recent > _silend, True, "…so an ordinary inter-word pause does not un-guard it")
+    eq(_recent < _hard, True,
+       "…but it never claims presence past the VAD's own end-of-turn verdict")
+    eq(_hold >= 3 * _recent, True, "the hold outlasts any legitimate onset by a wide margin")
+    eq(_poll < _again, True, "the deferral poll is finer than the wait it defers")
+
+    # ── the termination proof ────────────────────────────────────────────────
+    # The property that matters, as arithmetic over the constants read out of the page. An
+    # unbounded guard turns a silent call into an endless one, which is strictly worse than
+    # nudging early — so every path must still reach a nudge.
+    def nudge_at(wait: int, sound_at: int | None) -> int | None:
+        """When the ladder fires, for a caller who makes one sound at `sound_at` and then
+        nothing (None = never makes a sound). Mirrors handleNoReply's poll-and-hold."""
+        t = wait
+        held = 0
+        while t <= wait + _hold + 4 * _poll:
+            blocked = sound_at is not None and 0 <= t - sound_at < _recent
+            if not blocked:
+                return t
+            held = held or t
+            if t - held >= _hold:
+                return t
+            t += _poll
+        return None
+
+    eq(nudge_at(_again, None), _again, "a silent caller is nudged exactly on time")
+    late = [s for s in range(0, _again, 25)
+            if (lambda n: n is None or n < s + _recent)(nudge_at(_again, s))]
+    eq(late, [],
+       "a caller who makes ANY sound is never nudged within RECENT_VOICE_MS of it — this is "
+       "the talk-over that produced 'voice is breaking' and 'input is not taking'")
+    # …and the caller who never stops making noise still gets nudged, via the hold ceiling.
+    eq(nudge_at(_again, _again) is not None, True,
+       "continuous room noise still terminates the ladder — the hold is ceilinged")
+    eq(_first + 3 * _again + 4 * (_hold + _poll) <= 30000, True,
+       "even deferred at every rung, the ladder still ends the call")
+
 
 # ── the resets ───────────────────────────────────────────────────────────────
 # A missed reset does not break the FIRST silence of a call. It breaks the SECOND, by hanging
@@ -220,12 +308,21 @@ for name, opener in (("choose", "async function choose(s, lang){"),
                      ("stopTalking", "function stopTalking(){"),
                      ("restart", "function restart(){"),
                      ("endCall", "function endCall(){"),
-                     ("sendTyped", "async function sendTyped(){"),
-                     ("endTurn", "function endTurn(){")):
+                     ("sendTyped", "async function sendTyped(){")):
     eq("noReplyRung=0" in body(opener, name), True, f"{name} rewinds the ladder")
 
 _recog = _html.split("recog.onresult=e=>{", 1)[-1].split("\n  };", 1)[0]
 eq("noReplyRung=0" in _recog, True, "the browser-speech path rewinds the ladder too")
+
+# The rewind belongs where the caller is HEARD, not where audio arrives. endTurn fires on audio,
+# so a mic emitting junk every two seconds rewound the ladder forever and the call could never
+# end. A transcript is sent for every non-silent turn and never for a silent one.
+eq("noReplyRung=0" in body("function endTurn(){", "endTurn"), False,
+   "endTurn does NOT rewind — audio arriving is not the same as the caller being heard")
+_tr = [ln for ln in _html.splitlines() if "case 'transcript':" in ln]
+eq(len(_tr), 1, "there is exactly one transcript handler")
+if _tr:
+    eq("noReplyRung=0" in _tr[0], True, "…and it is where the ladder rewinds")
 
 # …and the one place that deliberately does NOT rewind. A cough is not a reply, and letting one
 # rewind the ladder means a noisy room keeps a dead call open forever.
@@ -271,6 +368,23 @@ eq("clearNoReply" in _barge, True, "barging in clears the pending nudge")
 # A WhatsApp thread must not start playing a voice line at rung 4.
 eq("isChat()" in body("async function sayFixed(text){", "sayFixed"), True,
    "the fixed ending does not synthesise audio in a chat scenario")
+
+
+# ── the audio-overlap fixes ──────────────────────────────────────────────────
+# startPcm resets pcmNext=0, which makes pcmFlush rebase onto the clock — so nodes still
+# scheduled from the previous reply kept playing while the new one was scheduled on top. Two
+# voices at once. Reachable without barge-in, via sendTyped during playback.
+eq("stopPcm()" in body("function startPcm(rate){", "startPcm"), True,
+   "a new PCM stream stops the old one's scheduled nodes before pcmNext is rebased")
+
+# dropAudioUntilIdle was set by barge-in and cleared ONLY by endPcm, so on a blob-only reply one
+# barge-in muted the agent permanently — playAudio returns immediately while it is set.
+for name, opener in (("clearAudioQueue", "function clearAudioQueue(){"),
+                     ("postTurn", "async function postTurn(opts){")):
+    eq("dropAudioUntilIdle=false" in body(opener, name), True,
+       f"{name} clears the barge-in drop flag")
+eq("dropAudioUntilIdle=false" in _html.split("case 'status':", 1)[-1].split("case 'error'", 1)[0],
+   True, "…and so does the end of a turn")
 
 
 # ── the demo copy tells the truth ────────────────────────────────────────────

@@ -449,6 +449,7 @@ let audioCtx=null, micStream=null, workletNode=null, sourceNode=null;
 let recog=null, pendingAudioMime=null, currentAudio=null, typingEl=null;
 let httpMode=false, httpHistory=[];
 let noReplyTimer=null, noReplyRung=0, endingCall=false, protectOpener=false;
+let voiceHeldSince=0, brokenRun=0;
 let sessionScenario='lead', sessionLang='english', disclose=true;
 let NOTES={help:'',reask:'',check:'',last:'',close:'',ending:''};
 const adminPw='';
@@ -461,6 +462,30 @@ const LANGS={english:{code:'en-IN',label:'English'},hindi:{code:'hi-IN',label:'�
    silent for eight seconds without it meaning anything. */
 const NO_REPLY_MS=3000,      NO_REPLY_AGAIN_MS=2000;
 const NO_REPLY_CHAT_MS=8000, NO_REPLY_CHAT_AGAIN_MS=5000;
+/* The window in which a caller is audibly speaking and every other guard flag is still false.
+   `capturing` needs ONSET_SUSTAIN_MS(60) of NET onsetRun — and onsetRun ERODES 1:1 on every
+   sub-threshold frame — so a soft or vowel-initial onset takes 100-300ms of wall clock to clear
+   it, on top of MUTE_TAIL_MS during which armed() is false anyway. callerVoiceAt is stamped one
+   frame after any energy over voiceT, which is ~3dB BELOW the capture line, with no sustain
+   requirement and no armed() gate. It is the earliest evidence this page has that someone is
+   there, and without it the ladder fires nudges over people mid-word.
+   400: above the 260ms MUTE_TAIL_MS+ONSET_SUSTAIN_MS floor and the ~300ms a soft onset costs;
+   above SILENCE_END_MS(300) so an ordinary inter-word gap cannot un-guard it; below
+   HARD_QUIET_MS(900) so it can never claim presence the VAD would already call a finished turn. */
+const RECENT_VOICE_MS=400;
+/* Poll, don't re-arm. Re-arming gave a nudge deferred by 40ms of playback the FULL 2-3s wait
+   again. Every real state change (afterPlay, endTurn, sendSilent) calls clearNoReply and arms
+   properly, so this timer is always superseded rather than compounding. */
+const NO_REPLY_POLL_MS=250;
+/* The ceiling on the one guard term with no bound of its own. voiceT sits at 0.70*onsetT and
+   onsetT is floored at silT/HYST_FRAC, so a steady room stays under it — but callerVoiceAt only
+   needs ONE frame per 400ms over that line, and that much crest is ordinary in a shop, near a
+   TV, or by a road. Which is where this gets demoed. Energy that clears voiceT but never clears
+   onsetT for 1.5s straight is a room, not a person: nudge anyway. A silent call that never ends
+   is strictly worse than one that ends early. */
+const RECENT_VOICE_MAX_HOLD_MS=1500;
+const MUTE_TAIL_MS=200;                  // named so the guard arithmetic is assertable offline
+const BROKEN_TELL_AT=3;
 const FETCH_TIMEOUT_MS=12000;
 
 function langLabel(){ return (LANGS[sessionLang]||LANGS.english).label; }
@@ -857,7 +882,11 @@ function onWsMessage(ev){
   }
   let m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
   switch(m.type){
-    case 'transcript': hideTyping(); bubble(m.text,'user'); break;
+    // The ladder rewinds HERE, not in endTurn. endTurn fires on audio ARRIVING, so a mic
+    // emitting junk every two seconds rewound the ladder forever and the call became immortal.
+    // A transcript is sent for every non-silent turn and never for a silent one — it is exactly
+    // "we heard the caller", which is what the ladder's own comment always claimed.
+    case 'transcript': hideTyping(); noReplyRung=0; brokenRun=0; bubble(m.text,'user'); break;
     case 'assistant_text': hideTyping(); bubble(m.text,'assistant'); break;
     case 'tts_audio_meta': pendingAudioMime=m.mime; break;
     case 'tts_stream_start': startPcm(m.rate); break;
@@ -886,6 +915,10 @@ function onWsMessage(ev){
       if(m.state==='thinking'){ showTyping(); setPill('thinking'); break; }
       if(m.state!=='idle'){ setPill(m.state); break; }
       hideTyping(); waitingForServer=false;
+      // The turn is over, so the barge-in drop flag must not survive into the next one. It was
+      // cleared ONLY by endPcm, so on a blob-only reply a single barge-in muted the agent for
+      // the rest of the call — playAudio returns immediately while it is set.
+      dropAudioUntilIdle=false;
       if(m.detail==='no speech detected'){ onBrokenInput(); break; }
       endOfStream(); break;
     case 'error':
@@ -941,7 +974,26 @@ const LADDER = [
   () => NOTES.last,
   () => NOTES.close,
 ];
-function clearNoReply(){ if(noReplyTimer){ clearTimeout(noReplyTimer); noReplyTimer=null; } }
+function clearNoReply(){
+  if(noReplyTimer){ clearTimeout(noReplyTimer); noReplyTimer=null; }
+  voiceHeldSince=0;              // the hold clock belongs to a pending nudge, not to the call
+}
+/* Anything that means the agent still has audio to deliver. Same set pcmDone tests, plus the
+   queue — because drainAudio HOLDS a blob while the caller is capturing without ever setting
+   `playing`, so a reply can be pending with all three of the old flags false. */
+function audioBusy(){
+  return audioQ.length>0 || qActive || pcmNodes.length>0 || pcmPendingSamples>0 || !!pcmHoldTimer;
+}
+/* THE guard, and the reason it returns WHY rather than a boolean: three of these four end by
+   their own mechanism and only need polling, one of them can be true forever and has to be held
+   on a clock. Returns '' when it is safe to speak. */
+function nudgeBlocked(){
+  if(waitingForServer)       return 'server';   // this turn's reply is still being composed
+  if(playing || audioBusy()) return 'audio';    // the agent is mid-sentence
+  if(capturing)              return 'turn';     // the caller is mid-sentence
+  if(performance.now()-callerVoiceAt < RECENT_VOICE_MS) return 'voice';
+  return '';
+}
 /* `fresh` grants the first-rung wait WITHOUT rewinding the ladder — for evidence of presence
    that is not yet an answer, like a chat caller typing. They are here, so don't rush them;
    they still haven't replied, so don't hand them four more nudges either. */
@@ -957,11 +1009,23 @@ function armNoReply(fresh){
 async function handleNoReply(){
   noReplyTimer=null;
   if((!listening && !isChat()) || endingCall) return;
-  if(waitingForServer||playing||capturing){ armNoReply(); return; }  // busy → poll, don't step
-  stepLadder();
+  const why=nudgeBlocked();
+  if(!why){ voiceHeldSince=0; stepLadder(); return; }
+  // A block DEFERS a nudge, it never cancels one, and every hold is bounded:
+  //   'server' — the server always sends status:idle or error
+  //   'audio'  — pcmGuard is a dead-man switch on playback
+  //   'turn'   — MAX_TURN_MS ends any capture
+  // Those three bound themselves and just poll. 'voice' does not — see RECENT_VOICE_MAX_HOLD_MS.
+  const now=performance.now();
+  if(why!=='voice')                                      voiceHeldSince=0;
+  else if(!voiceHeldSince)                               voiceHeldSince=now;
+  else if(now-voiceHeldSince>=RECENT_VOICE_MAX_HOLD_MS){ voiceHeldSince=0; stepLadder(); return; }
+  noReplyTimer=setTimeout(handleNoReply, NO_REPLY_POLL_MS);
 }
-/* The ONE ladder body. Both entry points call this and nothing else — the two copies that used
-   to live here and in onBrokenInput() were free to drift apart, and did. */
+/* The ONE ladder body, and it is UNCONDITIONAL by design: handleNoReply is the only door, so
+   the guard lives there and nowhere else. That matters — startTalking and restart reach
+   sendSilent directly with '(Call connected.)', and a guard in here would defer the opener
+   behind the audio it is about to produce. */
 function stepLadder(){
   // A rung whose line failed to load is SKIPPED, never stalled on. The old code handed '' to
   // sendSilent(), which returned at its own guard having armed nothing: the ladder died
@@ -974,6 +1038,11 @@ function stepLadder(){
   endingCall = true;
   if(NOTES.ending) sayFixed(NOTES.ending); else endCall();
 }
+/* sendSilent cancels NOTHING, deliberately. Any audio in flight is the agent's own reply that
+   the caller has not finished hearing — so the premise of a "are you still there?" nudge is
+   false, and cancelling would let a ladder step truncate the farewell sayFixed queues, which is
+   the exact bug the call_ended path was written to prevent. We never need to cancel because
+   nudgeBlocked() means we never dispatch while audio exists. */
 async function sendSilent(note){
   if(!note) return;
   clearNoReply(); showTyping(); setPill('thinking'); waitingForServer=true;
@@ -982,12 +1051,21 @@ async function sendSilent(note){
   else wsSend({type:'turn_text',text:note,silent:true,scenario:sessionScenario,
                lang:sessionLang,disclose:disclose});
 }
+/* An empty transcript is NOT silence. Something cleared MIN_SPEECH_MS and was uploaded, so the
+   caller was almost certainly making sound — charging them a ladder rung escalates them toward
+   a hang-up for the crime of speaking, and this path has no wait in front of it, so three
+   misses reached the close rung and hung up inside a second.
+   The audio queue is not cleared either: the server returns before any TTS on this path, so
+   anything queued belongs to the PREVIOUS reply, and clearing it truncated that reply
+   mid-sentence every single time STT missed. */
 function onBrokenInput(){
-  waitingForServer=false; clearAudioQueue();
+  waitingForServer=false;
   if(!listening && !isChat()){ setPill('idle'); return; }
   if(endingCall){ endCall(); return; }
+  if(++brokenRun===BROKEN_TELL_AT)
+    sysNote('Not catching that — try a little closer to the mic, or type it below.');
   rearm();
-  stepLadder();      // an empty transcript IS silence — same ladder, same rung, same count
+  armNoReply();      // re-arm and let the timer decide; the ladder is not this path's business
 }
 async function sayFixed(text){
   bubble(text,'assistant');
@@ -1033,7 +1111,8 @@ async function postTurn(opts){
   }
   hideTyping();
   if(d.error==='no input'){ onBrokenInput(); return; }
-  if(d.transcript && !opts.silent) bubble(d.transcript,'user');
+  if(d.transcript && !opts.silent){ noReplyRung=0; brokenRun=0; bubble(d.transcript,'user'); }
+  dropAudioUntilIdle=false;      // this turn is over; never carry the barge-in drop into it
   if(d.error) sysNote('Something glitched — carry on talking.');
   if(d.reply) bubble(d.reply,'assistant');
   if(d.goal && Object.keys(d.goal).length) renderGoals(d.goal);
@@ -1176,6 +1255,7 @@ let nfBucket=Infinity, nfPrev=Infinity, nfBucketStart=0;   // sliding-minimum no
 let onsetRun=0, silentRun=0, recentVoiced=0, framesSinceVoiced=0, rvDecay=0.998;
 let sigPeak=0, turnPeak=0, peakDecay=0.9999, turnPeakDecay=0.9995;
 let deafSince=0, deafNoted=false, lastVoiceAt=0, micFrames=0;
+let callerVoiceAt=0;              // last frame of CALLER energy — the no-reply guard's evidence
 /* Seeded from the DOM rather than a literal so a browser that restores a changed slider value
    on reload does not leave the cached copy stale until the caller happens to touch it. Cached
    because onPcm runs ~375 times a second and must never read the DOM. */
@@ -1439,7 +1519,11 @@ function onPcm(chunk){
   onsetT=Math.max(nf*ONSET_FLOOR_K,Math.min(onsetT,sigPeak*PEAK_ONSET));
   onsetT=Math.max(onsetT,silT/HYST_FRAC);                  // hysteresis is non-negotiable
   const voiceT=onsetT*CONTINUE_FRAC;
-  if(rms>voiceT) lastVoiceAt=nowMs;              // generous: a quiet talker is still present
+  if(rms>voiceT){ lastVoiceAt=nowMs;             // generous: a quiet talker is still present
+    // Separate stamp for the no-reply guard. hardQuiet wants "any energy at all", including the
+    // agent's own if barge-in ever lets it through; the guard wants "the CALLER is present" and
+    // must never be pinned by the agent's voice on a speakerphone the echo verdict misjudged.
+    if(!playing) callerVoiceAt=nowMs; }
   _thrVal=Math.min(1,onsetT/0.05);               // show the bar the caller has to clear
   if(VAD_DEBUG) window.__vad={rms,nf,silT,onsetT,voiceT,sigPeak,turnPeak,capturing,
                               armed:armed(),silentMs:silentRun/srate*1000,
@@ -1562,7 +1646,10 @@ function endTurn(){
     if(listening&&!endingCall) armNoReply();
     return;
   }
-  noReplyRung=0; waitingForServer=true; setPill('transcribing'); turnsSent++;
+  // The ladder does NOT rewind here. This fires on audio arriving, which is not the same as the
+  // caller being heard — a mic emitting junk would rewind forever. The rewind lives in the
+  // transcript handler, which the server sends only for a turn it actually transcribed.
+  waitingForServer=true; setPill('transcribing'); turnsSent++;
   tEndOfSpeech=performance.now();                // the clock the HUD reports
   if(streamed&&ws&&ws.readyState===1){
     pumpMicStream(true);
@@ -1616,7 +1703,7 @@ function startRecog(){
   recog=new SR(); recog.lang=langCode(); recog.continuous=false; recog.interimResults=false;
   recog.onresult=e=>{
     const t=e.results[0][0].transcript;
-    clearNoReply(); noReplyRung=0; turnsSent++; tEndOfSpeech=performance.now();
+    clearNoReply(); noReplyRung=0; brokenRun=0; turnsSent++; tEndOfSpeech=performance.now();
     if(httpMode){ postTurn({text:t}); return; }
     waitingForServer=true; setPill('transcribing');
     wsSend({type:'turn_text',text:t,scenario:sessionScenario,lang:sessionLang,disclose:disclose});
@@ -1701,6 +1788,11 @@ function startPcm(rate){
   // Clearing your throat as the reply started silently destroyed the whole reply. Dropping the
   // stream deliberately, with a flag, is the honest version of the same intent.
   dropAudioUntilIdle = capturing;
+  // Stop the PREVIOUS stream before rebasing. pcmNext=0 makes pcmFlush see pcmNext<=now and
+  // rebase onto the clock, so any nodes still scheduled from the last reply kept playing while
+  // the new one was scheduled on top of them — two voices at once, plus a step discontinuity
+  // from rsReset() mid-stream. Reachable without barge-in, via sendTyped during playback.
+  if(pcmNodes.length||pcmPendingSamples||pcmHoldTimer) stopPcm();
   pcmRate=rate||PCM_RATE_HINT; pcmNext=0; streamDone=false;
   pcmPending=[]; pcmPendingSamples=0; pcmStarted=false; pcmFirstArrivalAt=0; pcmUnderruns=0;
   rsReset();
@@ -1814,6 +1906,7 @@ function stopPcm(){
 let audioQ=[], qActive=false, streamDone=false, audioEpoch=0;
 function clearAudioQueue(){
   audioQ=[]; qActive=false; streamDone=false; playing=false; audioEpoch++;
+  dropAudioUntilIdle=false;   // safe: the barge-in path clears the queue and THEN sets the flag
   stopPcm();
   if(currentAudio){ try{ currentAudio.pause(); }catch(e){} }
 }
@@ -1849,7 +1942,7 @@ function afterPlay(){
   echoVerdict(window.__vad ? window.__vad.nf : NF_MIN);
   // Speaker-tail guard, and clear the pre-roll so nothing recorded during the agent's own line
   // can be prepended to the caller's next utterance.
-  muteUntil=performance.now()+200; preRoll=[];
+  muteUntil=performance.now()+MUTE_TAIL_MS; preRoll=[];
   protectOpener=false;      // the opener has now been heard whole; barge-in is live again
   if(endingCall){ endCall(); return; }
   if(listening||isChat()){ setPill('listening'); rearm(); armNoReply(); }
