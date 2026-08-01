@@ -89,6 +89,28 @@ def _model_for(lang: str) -> str:
     return ELEVEN_MODEL_TE if (lang or "").lower() == "telugu" else ELEVEN_MODEL_ENHI
 
 
+# ElevenLabs' stream-input WebSocket REJECTS eleven_v3 with HTTP 403 — the model is HTTP-only.
+# Without this, stream_capable() said Telugu streams, every Telugu turn opened a socket that was
+# refused, and only then fell back to the blob path. A doomed handshake on every single turn.
+_NO_SOCKET_MODELS = {"eleven_v3"}
+
+# language_id sets per model, filled by probe_elevenlabs from /v1/models. Empty until it runs, and
+# every check below treats empty as "unknown, do not block" — a probe failure must not mute a
+# language.
+_model_langs: dict[str, set[str]] = {}
+_LANG_ID = {"english": "en", "hindi": "hi", "telugu": "te"}
+
+
+def _model_lang_gap(lang: str) -> str:
+    """'' when the model configured for `lang` speaks it, else why it does not."""
+    lng = (lang or "").lower()
+    model, want = _model_for(lng), _LANG_ID.get(lng)
+    known = _model_langs.get(model)
+    if not known or not want or want in known:
+        return ""
+    return f"{model} does not speak {lng} (it lists {len(known)} languages, not {want})"
+
+
 def _voice_for(lang: str) -> str:
     """eleven_v3 is multilingual, but a voice designed for a language sounds best in it —
     each language can have its own voice; unset ones fall back to the primary."""
@@ -219,6 +241,24 @@ async def probe_elevenlabs() -> None:
         resp.raise_for_status()
         models = resp.json()
         ids = {m.get("model_id") for m in models} if isinstance(models, list) else set()
+        # Which languages each model actually speaks, straight from the provider. Pointing a
+        # language at a model that does not support it does NOT fail — it renders that script
+        # with the wrong phoneme set and sounds mangled, which is indistinguishable from a bad
+        # voice. That shipped: Telugu was configured onto eleven_flash_v2_5, whose language list
+        # (32 entries) does not include Telugu. Only eleven_v3 does, out of the whole catalogue.
+        if isinstance(models, list):
+            _model_langs.clear()
+            for m in models:
+                mid = m.get("model_id")
+                if not mid:
+                    continue
+                _model_langs[mid] = {
+                    (lg.get("language_id") or "").lower() for lg in (m.get("languages") or [])
+                }
+            for lng in ("english", "hindi", "telugu"):
+                bad = _model_lang_gap(lng)
+                if bad:
+                    print(f"[tts] {bad} — speaking {lng} with Sarvam instead")
         if ELEVEN_MODEL in ids:
             _eleven_ok = True
             _eleven_reason = "ok"
@@ -362,6 +402,10 @@ _PCM_FORMAT = _STREAM_FORMAT
 def stream_capable(lang: str) -> bool:
     lng = (lang or "").lower()
     if lng == "telugu" and TELUGU_TTS == "sarvam" and sarvam_keys.available():
+        return False
+    # The model cannot use the socket at all (eleven_v3), or cannot speak this language. Either
+    # way, opening one wastes a handshake per turn before the inevitable fallback.
+    if _model_for(lng) in _NO_SOCKET_MODELS or _model_lang_gap(lng):
         return False
     return bool(TTS_PROVIDER == "elevenlabs" and _eleven_ok and _ELEVEN_KEYS
                 and _voice_for(lng) not in _dead_voices)
@@ -672,13 +716,18 @@ async def synthesize(text: str, lang: str = "english") -> tuple[bytes | None, st
     # Telugu: prefer Sarvam Bulbul — faster than the slow eleven_v3 and native to the language
     # (also reads numbers/dates more cleanly). Only when a Sarvam key exists; else fall through
     # to ElevenLabs v3 as before.
-    if lng == "telugu" and TELUGU_TTS == "sarvam" and sarvam_keys.available():
+    # …and the same for ANY language whose configured ElevenLabs model does not speak it. A
+    # model that lacks the language does not error — it renders the script with the wrong
+    # phonemes, which sounds like a broken voice and is impossible to diagnose from the outside.
+    # Sarvam is native to all three, so it is strictly better than a mangled render.
+    if (lng == "telugu" and TELUGU_TTS == "sarvam" or _model_lang_gap(lng)) \
+            and sarvam_keys.available():
         try:
             audio, mime = await _sarvam(text, lang)
             if audio:
                 return audio, mime
         except Exception:
-            pass  # fall through to ElevenLabs v3
+            pass  # fall through to ElevenLabs
 
     # Preferred: ElevenLabs (if probe said it's usable and this language's voice isn't dead)
     if TTS_PROVIDER == "elevenlabs" and _eleven_ok and _voice_for(lng) not in _dead_voices:

@@ -240,12 +240,40 @@ eq(s.ok, False, "cancel marks the stream dead")
 
 # ── 6. Telugu never gets a socket ───────────────────────────────────────────
 _saved_ok, tts._eleven_ok = tts._eleven_ok, True   # the probe never ran in this test process
-# It routes to Sarvam Bulbul, which is why Telugu keeps whole-text verbalization and carries
-# none of the per-clause risk above.
+# Telugu keeps whole-text verbalization and carries none of the per-clause risk above — either
+# because it routes to Sarvam Bulbul, or because eleven_v3 (the ONLY ElevenLabs model that
+# speaks Telugu) is refused by the stream-input endpoint. Measured against the real API: the
+# socket returns HTTP 403 for eleven_v3. Before this, stream_capable said Telugu streamed, so
+# every Telugu turn opened a socket that was rejected and only then fell back to the blob path.
 eq(tts.ElevenStream("telugu").usable(), False,
-   "Telugu is excluded from the socket (it speaks through Sarvam)")
+   "Telugu is excluded from the socket")
 eq(tts.ElevenStream("english").usable(), True, "English is not")
 eq(tts.ElevenStream("hindi").usable(), True, "Hindi is not")
+
+_saved_te, _saved_langs = tts.ELEVEN_MODEL_TE, dict(tts._model_langs)
+eq("eleven_v3" in tts._NO_SOCKET_MODELS, True,
+   "eleven_v3 is known to be HTTP-only — the socket 403s on it")
+
+# ── 7. a model that cannot SPEAK the language is caught, not shipped ────────
+# This is the bug the user heard as "the voice is not good". Telugu was configured onto
+# eleven_flash_v2_5, whose /v1/models language list has 32 entries and no Telugu. A model
+# missing a language does not error — it renders the script with the wrong phoneme set, which
+# is indistinguishable from a broken voice and impossible to diagnose from outside.
+tts._model_langs.update({
+    "eleven_flash_v2_5": {"en", "hi", "fr", "de"},      # as the real API reports: no "te"
+    "eleven_v3": {"en", "hi", "te"},
+})
+tts.ELEVEN_MODEL_TE = "eleven_flash_v2_5"
+eq(bool(tts._model_lang_gap("telugu")), True,
+   "a Telugu model that does not list Telugu is reported as a gap")
+eq(tts.stream_capable("telugu"), False, "…and it is never given a socket")
+tts.ELEVEN_MODEL_TE = "eleven_v3"
+eq(tts._model_lang_gap("telugu"), "", "eleven_v3 does speak Telugu, so no gap")
+# A failed probe leaves the table empty; that must not mute a language.
+tts._model_langs.clear()
+eq(tts._model_lang_gap("telugu"), "", "unknown language data never blocks — probe failures are "
+                                      "transient and silence is worse than a guess")
+tts.ELEVEN_MODEL_TE, tts._model_langs = _saved_te, _saved_langs
 tts._eleven_ok = _saved_ok
 
 # ── report ───────────────────────────────────────────────────────────────────
