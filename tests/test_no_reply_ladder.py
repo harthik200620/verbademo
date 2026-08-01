@@ -399,6 +399,28 @@ eq("dropAudioUntilIdle=false" in _html.split("case 'status':", 1)[-1].split("cas
    True, "…and so does the end of a turn")
 
 
+# ── the shape of the echo bug, so it cannot return anywhere ──────────────────
+# echoVerdict was called as `echoVerdict(window.__vad ? window.__vad.nf : NF_MIN)`, and
+# window.__vad is assigned ONLY under ?vad=1. So in production it always took the NF_MIN
+# fallback, echoSuspected was permanently true, bargeActive() permanently false, and BARGE-IN
+# HAS NEVER ONCE WORKED — which is why a caller could not talk over a mistimed nudge. The bug
+# was invisible because the fallback was syntactically fine. Generalise it: no production path
+# may read a debug-gated global.
+for _i, _ln in enumerate(_html.splitlines(), 1):
+    _code = _ln.split("//", 1)[0]          # prose may name it; only CODE reading it is the bug
+    if "window.__vad" in _code:
+        eq("VAD_DEBUG" in _code, True,
+           f"index.html:{_i} reads window.__vad outside a VAD_DEBUG guard — that global does "
+           f"not exist in production, so whatever depends on it silently takes the fallback")
+eq(bool(re.search(r"\blastNf\s*=\s*nf\b", _html)), True,
+   "the real noise floor is exported for echoVerdict")
+eq("echoVerdict(lastNf)" in _html, True, "…and echoVerdict is given it")
+# The verdict must still default to 'echo present'. It is the only thing between a speakerphone
+# caller and an agent that interrupts itself on the first frame.
+eq(bool(re.search(r"echoSuspected\s*=\s*true", _html)), True,
+   "the echo verdict still starts pessimistic")
+
+
 # ── the demo copy tells the truth ────────────────────────────────────────────
 eq("checks twice" in _html, False,
    "the edge-case lab no longer promises two checks — there are three follow-ups now")

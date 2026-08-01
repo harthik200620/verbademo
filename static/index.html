@@ -1297,10 +1297,19 @@ const BARGE_SUSTAIN_MS=350;
    direction that costs a feature, never in the direction that breaks a call. */
 const ECHO_K=2.2, ECHO_MIN_FRAMES=25;
 let echoSum=0, echoFrames=0, echoSuspected=true, echoTold=false;
+let lastNf=NF_MIN;                 // the room floor, exported from onPcm — see echoVerdict
 function echoSample(rms){ echoSum+=rms; echoFrames++; }
 function echoVerdict(nf){
   if(echoFrames < ECHO_MIN_FRAMES) return;            // too little of the reply to judge
   const mean=echoSum/echoFrames, was=echoSuspected;
+  // ECHO_K compares a MEAN against a sliding MINIMUM, and this file measures a silent room at
+  // 2.5x its own minimum — already above K. So the verdict cannot yet tell headphones from a
+  // speakerphone; it can only say "echo". K is NOT being guessed here: read this ratio on a real
+  // headset and on a real speakerphone, in all three languages, and set K between the two
+  // clusters. Guessing it permissively makes the agent cut ITSELF off, which is a worse version
+  // of the breaking this whole change is fixing.
+  console.info('[echo] mean/nf', (mean/Math.max(nf,NF_MIN)).toFixed(2), 'K', ECHO_K,
+               '→', mean > Math.max(nf,NF_MIN)*ECHO_K ? 'suspected' : 'clear');
   echoSuspected = mean > Math.max(nf,NF_MIN)*ECHO_K;
   echoSum=0; echoFrames=0;
   if(was!==echoSuspected || !echoTold){
@@ -1503,6 +1512,12 @@ function onPcm(chunk){
   if(nowMs-nfBucketStart>=NF_WINDOW_MS/2){ nfPrev=nfBucket; nfBucket=Infinity; nfBucketStart=nowMs; }
   if(rms<nfBucket) nfBucket=rms;
   const nf=Math.min(NF_MAX,Math.max(NF_MIN,Math.min(nfBucket,nfPrev)));
+  // Exported for echoVerdict, which runs in afterPlay() where `nf` is out of scope. It used to
+  // read window.__vad there — a global assigned ONLY under ?vad=1 — so in production it always
+  // got the NF_MIN fallback and the verdict was meaningless. Note onPcm returns above this line
+  // while the agent is speaking, so lastNf naturally holds the room floor from BEFORE the reply,
+  // which is exactly what a during-vs-before comparison wants.
+  lastNf=nf;
 
   // ── SIGNAL PEAKS: the second, floor-independent estimator ─────────────────
   // sigPeak answers "how loud does this microphone actually get?" and is the only thing that can
@@ -1947,7 +1962,7 @@ function endOfStream(){
 function afterPlay(){
   // The reply just ended, so everything sampled during it was the agent. Rule on it now, while
   // the noise floor still reflects this room rather than the next utterance.
-  echoVerdict(window.__vad ? window.__vad.nf : NF_MIN);
+  echoVerdict(lastNf);
   // Speaker-tail guard, and clear the pre-roll so nothing recorded during the agent's own line
   // can be prepended to the caller's next utterance.
   muteUntil=performance.now()+MUTE_TAIL_MS; preRoll=[];
